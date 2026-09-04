@@ -25,8 +25,16 @@ export function locate(tab: vscode.Tab): TabLocation | undefined {
   return undefined;
 }
 
-export function findByLabel(label: string): vscode.Tab | undefined {
-  return claudeTabs().find((t) => t.label === label);
+// Claude Code shortens long titles to about 24 characters plus an ellipsis.
+export function labelMatches(label: string, title: string): boolean {
+  if (label === title) return true;
+  const stem = label.endsWith('…') ? label.slice(0, -1) : label.endsWith('...') ? label.slice(0, -3) : undefined;
+  return stem !== undefined && stem.length > 0 && title.startsWith(stem);
+}
+
+export function findByLabel(title: string, exclude?: Set<vscode.Tab>): vscode.Tab | undefined {
+  const candidates = claudeTabs().filter((t) => !exclude?.has(t));
+  return candidates.find((t) => t.label === title) ?? candidates.find((t) => labelMatches(t.label, title));
 }
 
 const GROUP_FOCUS = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth'].map(

@@ -89,7 +89,9 @@ export function activate(context: vscode.ExtensionContext): void {
     s.tab = undefined;
     const label = s.title ?? s.tabLabel;
     if (!label) return undefined;
-    const tab = tabs.findByLabel(label);
+    const taken = new Set<vscode.Tab>();
+    for (const other of registry.sessions.values()) if (other !== s && other.tab) taken.add(other.tab);
+    const tab = tabs.findByLabel(label, taken);
     if (tab) {
       s.tab = tab;
       s.tabLabel = tab.label;
@@ -112,7 +114,9 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   function findSessionByTitle(title: string): Session | undefined {
-    return [...registry.sessions.values()].find((s) => s.title === title || s.tabLabel === title);
+    return [...registry.sessions.values()].find(
+      (s) => s.title === title || (!!s.tabLabel && tabs.labelMatches(s.tabLabel, title)),
+    );
   }
 
   async function pinTab(tab: vscode.Tab): Promise<void> {
@@ -246,9 +250,10 @@ export function activate(context: vscode.ExtensionContext): void {
       if (tab !== active && tabs.locate(tab)) void pinTab(tab);
     }
     seenTimer = setTimeout(() => {
+      const all = [...registry.sessions.values()];
       const s =
-        [...registry.sessions.values()].find((x) => x.tab === active) ??
-        [...registry.sessions.values()].find((x) => (x.title ?? x.tabLabel) === active.label);
+        all.find((x) => x.tab === active) ??
+        all.find((x) => (x.title ? tabs.labelMatches(active.label, x.title) : x.tabLabel === active.label));
       if (s && s.state === 'ready' && !s.seenAt) {
         s.seenAt = Date.now();
         log.info(`seen "${active.label}"`);

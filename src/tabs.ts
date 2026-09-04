@@ -93,8 +93,16 @@ export async function pinToFront(tab: vscode.Tab, opts: PinOptions): Promise<boo
   return true;
 }
 
-export async function unpinActive(tab: vscode.Tab): Promise<boolean> {
-  if (vscode.window.tabGroups.activeTabGroup.activeTab !== tab) return false;
-  if (tab.isPinned) await run('workbench.action.unpinEditor');
+export function activeClaudeTab(): vscode.Tab | undefined {
+  const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+  return isClaudeTab(active) ? active : undefined;
+}
+
+// Keyed by label rather than Tab identity: VS Code may hand out a new Tab
+// object after a pin/move, but the label survives.
+export async function unpinActive(label: string): Promise<boolean> {
+  const active = activeClaudeTab();
+  if (!active || active.label !== label) return false;
+  if (active.isPinned) await run('workbench.action.unpinEditor');
   return true;
 }

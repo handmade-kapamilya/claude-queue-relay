@@ -17,6 +17,7 @@ export interface Lane {
   inbound: LaneFile;
   landedAt?: number;
   seen: boolean;
+  lastLandedKey?: string;
 }
 
 const FIELD = /^\s*[-*]?\s*\**([A-Z][A-Z_-]+)\**\s*:\s*(.+?)\s*$/;
@@ -112,6 +113,7 @@ export class RelayWatcher implements vscode.Disposable {
         inbound: readLaneFile(path.join(relay, 'inbound.md')),
         seen: true,
       };
+      lane.lastLandedKey = landedKey(lane);
       this.lanes.push(lane);
       try {
         const w = fs.watch(relay, () => this.schedule(lane));
@@ -149,11 +151,18 @@ export class RelayWatcher implements vscode.Disposable {
     lane.outbound = readLaneFile(path.join(relay, 'outbound.md'));
     lane.inbound = readLaneFile(path.join(relay, 'inbound.md'));
     const changed = lane.outbound.mtime !== prev.mtime || lane.outbound.fields.TASK_ID !== prev.fields.TASK_ID;
-    if (changed && laneLanded(lane)) {
+    const key = landedKey(lane);
+    // outbound.md is often written twice within seconds; only a new task/status counts as a landing
+    if (changed && laneLanded(lane) && key !== lane.lastLandedKey) {
+      lane.lastLandedKey = key;
       lane.landedAt = Date.now();
       lane.seen = false;
       this.landed.fire(lane);
     }
     this.changed.fire(lane);
   }
+}
+
+function landedKey(lane: Lane): string {
+  return `${lane.outbound.fields.TASK_ID ?? ''}|${status(lane.outbound)}`;
 }

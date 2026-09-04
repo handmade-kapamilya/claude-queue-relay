@@ -40,8 +40,8 @@ export function activate(context: vscode.ExtensionContext): void {
   status.command = 'claudeTabQueue.showQueue';
   status.show();
 
-  const pinnedByUs = new Set<vscode.Tab>();
-  const pendingPins = new Set<vscode.Tab>();
+  const pinnedByUs = new Set<string>();
+  const pendingPins = new Set<string>();
   let dancing = false;
   let seenTimer: NodeJS.Timeout | undefined;
   let refreshTimer: NodeJS.Timeout | undefined;
@@ -122,16 +122,20 @@ export function activate(context: vscode.ExtensionContext): void {
   async function pinTab(tab: vscode.Tab): Promise<void> {
     const mode = cfg<string>('pinMode', 'immediate');
     if (mode === 'off') return;
+    if (tabs.activeClaudeTab()?.label === tab.label) {
+      log.info(`"${tab.label}" is already in front of you; not pinning`);
+      return;
+    }
     if (mode === 'onNextSwitch' || dancing) {
-      pendingPins.add(tab);
+      pendingPins.add(tab.label);
       return;
     }
     dancing = true;
     try {
       const ok = await tabs.pinToFront(tab, { markUnread: cfg('markUnread', true), log: (m) => log.warn(m) });
       if (ok) {
-        pinnedByUs.add(tab);
-        pendingPins.delete(tab);
+        pinnedByUs.add(tab.label);
+        pendingPins.delete(tab.label);
         log.info(`pinned "${tab.label}" to front`);
       } else {
         log.warn(`could not locate tab "${tab.label}" to pin`);
@@ -141,23 +145,26 @@ export function activate(context: vscode.ExtensionContext): void {
     } finally {
       dancing = false;
     }
-    const next = [...pendingPins].find((t) => tabs.locate(t));
-    if (next) {
-      pendingPins.delete(next);
-      void pinTab(next);
+    for (const label of pendingPins) {
+      const next = tabs.findByLabel(label);
+      if (next) {
+        pendingPins.delete(label);
+        void pinTab(next);
+        break;
+      }
     }
   }
 
-  async function maybeUnpin(tab: vscode.Tab): Promise<void> {
-    pendingPins.delete(tab);
-    if (!pinnedByUs.has(tab)) return;
+  async function maybeUnpin(label: string): Promise<void> {
+    pendingPins.delete(label);
+    if (!pinnedByUs.has(label)) return;
     try {
-      if (await tabs.unpinActive(tab)) {
-        pinnedByUs.delete(tab);
-        log.info(`unpinned "${tab.label}"`);
+      if (await tabs.unpinActive(label)) {
+        pinnedByUs.delete(label);
+        log.info(`unpinned "${label}"`);
       }
     } catch (err) {
-      log.warn(`unpin failed for "${tab.label}": ${err}`);
+      log.warn(`unpin failed for "${label}": ${err}`);
     }
   }
 
@@ -221,16 +228,16 @@ export function activate(context: vscode.ExtensionContext): void {
       log.info(`${e.hook_event_name}${tag} ${short(s.id)} ${t.from}→${t.to}`);
     }
     if (e.hook_event_name === 'SessionEnd') {
-      if (s.tab) pendingPins.delete(s.tab);
+      if (s.tabLabel) pendingPins.delete(s.tabLabel);
       registry.remove(s.id);
       updateStatus();
       return;
     }
     if (e.hook_event_name === 'UserPromptSubmit') {
       bindActiveTab(s);
-      if (s.tab) void maybeUnpin(s.tab);
+      if (s.tabLabel) void maybeUnpin(s.tabLabel);
     }
-    if (t.to === 'running' && t.from === 'waiting' && s.tab) void maybeUnpin(s.tab);
+    if (t.to === 'running' && t.from === 'waiting' && s.tabLabel) void maybeUnpin(s.tabLabel);
     if (!s.title) {
       void refreshTitle(s).then(() => {
         bindByLabel(s);
@@ -244,10 +251,12 @@ export function activate(context: vscode.ExtensionContext): void {
   function onTabsChanged(): void {
     if (dancing) return;
     clearTimeout(seenTimer);
-    const active = vscode.window.tabGroups.activeTabGroup.activeTab;
-    if (!tabs.isClaudeTab(active)) return;
-    for (const tab of [...pendingPins]) {
-      if (tab !== active && tabs.locate(tab)) void pinTab(tab);
+    const active = tabs.activeClaudeTab();
+    if (!active) return;
+    for (const label of [...pendingPins]) {
+      if (label === active.label) continue;
+      const tab = tabs.findByLabel(label);
+      if (tab) void pinTab(tab);
     }
     seenTimer = setTimeout(() => {
       const all = [...registry.sessions.values()];
@@ -258,7 +267,7 @@ export function activate(context: vscode.ExtensionContext): void {
         s.seenAt = Date.now();
         log.info(`seen "${active.label}"`);
       }
-      if (!s || s.state !== 'waiting') void maybeUnpin(active);
+      if (!s || s.state !== 'waiting') void maybeUnpin(active.label);
       updateStatus();
     }, 1500);
   }
@@ -354,9 +363,11 @@ export function activate(context: vscode.ExtensionContext): void {
     status,
     vscode.window.tabGroups.onDidChangeTabs((ev) => {
       for (const tab of ev.closed) {
-        pinnedByUs.delete(tab);
-        pendingPins.delete(tab);
         for (const s of registry.sessions.values()) if (s.tab === tab) s.tab = undefined;
+        if (!tabs.findByLabel(tab.label)) {
+          pinnedByUs.delete(tab.label);
+          pendingPins.delete(tab.label);
+        }
       }
       for (const tab of ev.changed) {
         for (const s of registry.sessions.values()) if (s.tab === tab) s.tabLabel = tab.label;

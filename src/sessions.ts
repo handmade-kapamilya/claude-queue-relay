@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { HookEvent } from './events';
-import { Signal, classifyFooter } from './footer';
+import { Signal, classifyFooter, footerLanes } from './footer';
 
 export type State = 'idle' | 'running' | 'ready' | 'waiting' | 'ended';
 
@@ -18,6 +18,7 @@ export interface Session {
   tabLabel?: string;
   seenAt?: number;
   lastEventAt: number;
+  lanes: number[];
 }
 
 export interface Transition {
@@ -43,7 +44,7 @@ export class SessionRegistry {
   ensure(id: string, cwd: string, at = Date.now()): Session {
     let s = this.sessions.get(id);
     if (!s) {
-      s = { id, cwd, state: 'idle', since: at, lastEventAt: at };
+      s = { id, cwd, state: 'idle', since: at, lastEventAt: at, lanes: [] };
       this.sessions.set(id, s);
     }
     return s;
@@ -106,6 +107,7 @@ export class SessionRegistry {
         to = 'ready';
         s.lastMessage = e.last_assistant_message;
         s.signal = classifyFooter(e.last_assistant_message);
+        s.lanes = footerLanes(e.last_assistant_message);
         reason = s.signal?.label ?? 'finished';
         break;
       case 'StopFailure':

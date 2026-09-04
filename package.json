@@ -1,0 +1,168 @@
+{
+  "name": "claude-tab-queue",
+  "displayName": "Claude Tab Queue",
+  "description": "Pings you and moves a Claude Code session tab to the front of the tab bar when it finishes or needs your input. Also watches hk-relay lanes.",
+  "version": "0.1.0",
+  "publisher": "alex-holtzman",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/handmade-kapamilya/claude-tab-queue"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeTabQueue.showQueue",
+        "title": "Show Queue",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.goToSession",
+        "title": "Go To Session",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.openLane",
+        "title": "Open Relay Lane",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.installHooks",
+        "title": "Install Claude Code Hooks",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.clear",
+        "title": "Mark All Seen",
+        "category": "Claude Tab Queue",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "claudeTabQueue.refresh",
+        "title": "Refresh",
+        "category": "Claude Tab Queue",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeTabQueue.openLog",
+        "title": "Open Log",
+        "category": "Claude Tab Queue"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeTabQueue",
+          "title": "Claude Queue",
+          "icon": "media/queue.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeTabQueue": [
+        {
+          "id": "claudeTabQueue.queue",
+          "name": "Queue"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeTabQueue.clear",
+          "when": "view == claudeTabQueue.queue",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeTabQueue.refresh",
+          "when": "view == claudeTabQueue.queue",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Tab Queue",
+      "properties": {
+        "claudeTabQueue.pinMode": {
+          "type": "string",
+          "enum": [
+            "immediate",
+            "onNextSwitch",
+            "off"
+          ],
+          "default": "immediate",
+          "description": "When a session finishes or needs input, pin its tab to the front of the tab bar: right away, the next time you switch tabs, or never."
+        },
+        "claudeTabQueue.pinnedRow": {
+          "type": "boolean",
+          "default": true,
+          "description": "On first run, turn on workbench.editor.pinnedTabsOnSeparateRow so queued (pinned) tabs get their own row at the top."
+        },
+        "claudeTabQueue.sound": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a system sound when a session finishes, needs input, or a relay lane lands."
+        },
+        "claudeTabQueue.macNotification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a macOS notification (via osascript) in addition to the in-window toast."
+        },
+        "claudeTabQueue.toast": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an in-window toast with a Go to tab button."
+        },
+        "claudeTabQueue.markUnread": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also mark the finished session tab unread (orange dot) using Claude Code's own command."
+        },
+        "claudeTabQueue.relayLanes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "~/Documents/hk-relay",
+            "~/Documents/hk-relay-2",
+            "~/Documents/hk-relay-3"
+          ],
+          "description": "Relay lane folders to watch (each must contain relay/outbound.md)."
+        },
+        "claudeTabQueue.extraRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra folders whose Claude sessions this window should own, in addition to the workspace folders."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "package": "vsce package --no-dependencies",
+    "install-hooks": "node scripts/install-hooks.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.100.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0"
+  }
+}

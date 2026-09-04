@@ -272,7 +272,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }, 1500);
   }
 
-  function seed(): void {
+  function seed(quiet = false): void {
     const dir = path.join(HOME, '.claude', 'sessions');
     let names: string[] = [];
     try {
@@ -301,7 +301,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // malformed session file; skip
       }
     }
-    log.info(`seeded ${n} live session(s) from ~/.claude/sessions`);
+    if (!quiet) log.info(`seeded ${n} live session(s) from ~/.claude/sessions`);
   }
 
   // Drop sessions whose CLI process is gone and that have been silent for a while.
@@ -407,10 +407,15 @@ export function activate(context: vscode.ExtensionContext): void {
   spool.start();
   context.subscriptions.push({ dispose: () => spool.dispose() });
 
+  // Claude restarts its CLI processes after a window reload, so re-seed for a while.
   const timers = [
     setInterval(() => cleanupClaims(), 10 * 60_000),
-    setInterval(() => reconcile(), 2 * 60_000),
+    setInterval(() => {
+      seed(true);
+      reconcile();
+    }, 2 * 60_000),
     setInterval(() => view.refresh(), 30_000),
+    ...[20_000, 60_000].map((ms) => setTimeout(() => seed(true), ms)),
   ];
   context.subscriptions.push({ dispose: () => timers.forEach(clearInterval) });
 

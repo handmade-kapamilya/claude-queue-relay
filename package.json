@@ -2,7 +2,7 @@
   "name": "claude-tab-queue",
   "displayName": "Claude Tab Queue",
   "description": "Pings you and moves a Claude Code session tab to the front of the tab bar when it finishes or needs your input. Also watches hk-relay lanes.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "alex-holtzman",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,

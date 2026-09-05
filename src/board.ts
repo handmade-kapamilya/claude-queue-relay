@@ -116,7 +116,7 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
 }
 
 const CSS = `
-body { margin: 0; padding: 8px 10px 84px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
+body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
 .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
 .nextcard { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--vscode-focusBorder); cursor: pointer; margin: 2px 0 4px; }
 .nextcard:hover { background: var(--vscode-list-hoverBackground); }
@@ -135,28 +135,33 @@ h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color:
 .pulse { animation: pulse 2.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
 .hollow { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--vscode-descriptionForeground); }
-details { margin: 1px 0; }
-summary { list-style: none; display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 5px; }
-summary::-webkit-details-marker { display: none; }
-summary:hover { background: var(--vscode-list-hoverBackground); }
-.chev { width: 12px; font-size: 10px; color: var(--vscode-descriptionForeground); cursor: pointer; transition: transform .15s; }
-details[open] .chev { transform: rotate(90deg); }
-.title { cursor: pointer; font-weight: 600; white-space: nowrap; }
-.title:hover { text-decoration: underline; }
-.children { margin-left: 20px; }
 .empty { color: var(--vscode-descriptionForeground); padding: 3px 6px; font-style: italic; font-size: 12px; }
 .y { color: var(--vscode-charts-yellow); } .o { color: var(--vscode-charts-orange); } .r { color: var(--vscode-charts-red); }
 .g { color: var(--vscode-charts-green); } .b { color: var(--vscode-charts-blue); } .dim { opacity: .6; }
 /* Meter strip: frozen at the bottom while the list scrolls. */
-.footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 7px 10px 8px; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
-.strip { display: flex; align-items: center; gap: 10px; }
+.footer { position: fixed; left: 0; right: 0; bottom: 0; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
+.strip { display: flex; align-items: center; gap: 10px; padding: 7px 10px 0; }
+.lanes { display: flex; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
+.seg { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px 0; cursor: pointer; color: #b79d70; font-weight: 700; font-size: 13px; border-left: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
+.seg:first-child { border-left: 0; }
+.seg:hover { background: var(--vscode-list-hoverBackground); }
+.seg.open { background: rgba(183,157,112,.18); }
+.sd { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.drawer { max-height: 0; overflow: hidden; transition: max-height .22s ease; }
+.drawer.open { max-height: 300px; overflow: auto; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
+.drawer .inner { padding: 8px 6px 8px 10px; }
+.dh { display: flex; align-items: center; gap: 8px; margin: 0 0 4px 6px; }
+.dh b { color: #b79d70; }
+.dh .meta { flex: 1; }
+.cw { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #b79d70; color: #b79d70; cursor: pointer; white-space: nowrap; }
+.cw:hover { background: rgba(183,157,112,.18); }
 body.panel .footer { background: var(--vscode-editor-background); }
 .rings { width: 42px; height: 42px; flex: none; }
 .rings circle { fill: none; stroke-width: 3; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
 .track { stroke: #b79d70; stroke-opacity: .5; stroke-dasharray: 0.9 3.1; }
-.bar { position: relative; height: 3px; margin: 8px 0 3px; background: radial-gradient(circle, rgba(183,157,112,.55) 0.9px, transparent 1.3px) 0 50% / 6px 3px repeat-x; }
+.bar { position: relative; height: 3px; margin: 8px 10px 3px; background: radial-gradient(circle, rgba(183,157,112,.55) 0.9px, transparent 1.3px) 0 50% / 6px 3px repeat-x; }
 .bar .used { position: absolute; left: 0; top: 0; bottom: 0; background: #b79d70; border-radius: 2px; }
-.bartext { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bartext { padding: 0 10px 8px; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bartext b { color: #b79d70; font-weight: 600; }
 .legend { font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground); min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; }
 .legend b { color: #b79d70; font-weight: 600; }
@@ -169,7 +174,8 @@ body.panel .footer { background: var(--vscode-editor-background); }
 
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
-const state = vscode.getState() || { open: {} };
+const state = vscode.getState() || { openLane: null };
+let current = { blockedLanes: [], waiting: [], ready: [], tabs: [], lanes: [] };
 const root = document.getElementById('root');
 const LANE = ['1\\uFE0F\\u20E3', '2\\uFE0F\\u20E3', '3\\uFE0F\\u20E3', '4\\uFE0F\\u20E3', '5\\uFE0F\\u20E3'];
 window.addEventListener('message', function (e) { if (e.data && e.data.type === 'snapshot') render(e.data.snapshot); });
@@ -219,11 +225,6 @@ function section(title, nodes, emptyText) {
   nodes.forEach(function (n) { frag.appendChild(n); });
   return frag;
 }
-function stageIcon(l) {
-  const looks = { running: ['dot pulse', ''], ready: ['b', '\\u25D4'], complete: [l.seen ? 'dim' : 'g', '\\u2713'], partial: ['o', '\\u26A0'], blocked: ['y', '\\u26A0'], abandoned: ['r', '\\u2715'], queued: ['dim', '\\u25D4'], empty: ['hollow', ''] };
-  const look = looks[l.stage] || ['', ''];
-  return el('span', look[0], look[1]);
-}
 function taskGlyph(t) {
   if (t.role === 'queued') return ['dim', '\\u25D4'];
   if (t.role === 'current') return ['b', t.status === 'RUNNING' ? '\\u25CF' : '\\u25D4'];
@@ -239,32 +240,47 @@ function child(iconNode, label, meta, onclick) {
   r.onclick = onclick;
   return r;
 }
-function lane(l) {
-  const d = document.createElement('details');
-  d.open = !!state.open[l.n];
-  d.addEventListener('toggle', function () { state.open[l.n] = d.open; vscode.setState(state); });
-  const s = el('summary');
-  s.appendChild(el('span', 'chev', '\\u25B6'));
-  const icon = el('span', 'icon'); icon.appendChild(stageIcon(l)); s.appendChild(icon);
-  const t = el('span', 'title', 'Lane ' + l.n);
-  t.title = 'Open this lane in Cowork';
-  t.onclick = function (e) { e.preventDefault(); e.stopPropagation(); send({ type: 'openCowork', n: l.n }); };
-  s.appendChild(t);
-  const meta = el('span', 'meta ' + (l.age ? l.age.tier : ''), l.text);
-  meta.title = l.text;
-  s.appendChild(meta);
-  d.appendChild(s);
-  const kids = el('div', 'children');
+function stageMark(l) {
+  if (l.stage === 'blocked') return el('span', 'y', '\\u26A0');
+  const cls = { running: 'sd pulse b', ready: 'sd b', complete: l.seen ? 'sd dim' : 'sd g', partial: 'sd o', abandoned: 'sd r', queued: 'sd dim' }[l.stage];
+  return cls ? el('span', cls) : null;
+}
+function laneBar(s) {
+  const bar = el('div', 'lanes');
+  s.lanes.forEach(function (l) {
+    const seg = el('div', 'seg' + (state.openLane === l.n ? ' open' : ''));
+    seg.appendChild(el('span', null, String(l.n)));
+    const mark = stageMark(l);
+    if (mark) seg.appendChild(mark);
+    seg.title = 'Lane ' + l.n + ' \\u00b7 ' + l.text;
+    seg.onclick = function () { state.openLane = state.openLane === l.n ? null : l.n; vscode.setState(state); render(current); };
+    bar.appendChild(seg);
+  });
+  return bar;
+}
+function drawer(s) {
+  const d = el('div', 'drawer' + (state.openLane ? ' open' : ''));
+  const l = s.lanes.find(function (x) { return x.n === state.openLane; });
+  if (!l) return d;
+  const inner = el('div', 'inner');
+  const head = el('div', 'dh');
+  head.appendChild(el('b', null, 'Lane ' + l.n));
+  head.appendChild(el('span', 'meta ' + (l.age ? l.age.tier : ''), l.text));
+  const cw = el('span', 'cw', 'Cowork \\u2197');
+  cw.title = 'Open this lane in Cowork';
+  cw.onclick = function () { send({ type: 'openCowork', n: l.n }); };
+  head.appendChild(cw);
+  inner.appendChild(head);
   l.tasks.forEach(function (task) {
     const g = taskGlyph(task);
     const prefix = task.role === 'result' ? 'Result' : task.role === 'current' ? 'Now' : 'Queued #' + task.position;
-    kids.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'openLaneFile', n: l.n, file: task.file }); }));
+    inner.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'openLaneFile', n: l.n, file: task.file }); }));
   });
   l.tabs.forEach(function (tab) {
-    kids.appendChild(child(numIcon(l.n), 'Tab: \\u00ab' + tab.label + '\\u00bb', 'waiting on this lane', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));
+    inner.appendChild(child(numIcon(l.n), 'Tab: \\u00ab' + tab.label + '\\u00bb', 'waiting on this lane', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));
   });
-  if (!l.tasks.length && !l.tabs.length) kids.appendChild(el('div', 'empty', 'nothing queued'));
-  d.appendChild(kids);
+  if (!l.tasks.length && !l.tabs.length) inner.appendChild(el('div', 'empty', 'nothing queued'));
+  d.appendChild(inner);
   return d;
 }
 const GOLD = '#b79d70';
@@ -277,6 +293,8 @@ function iconButton(markup, title, on, onclick) {
 }
 function footer(s) {
   const bar = el('div', 'footer');
+  bar.appendChild(drawer(s));
+  bar.appendChild(laneBar(s));
   const strip = el('div', 'strip');
   const all = s.usage && s.usage.meters ? s.usage.meters : [];
   const five = all.find(function (m) { return m.label === '5h'; });
@@ -322,6 +340,7 @@ function footer(s) {
   return bar;
 }
 function render(s) {
+  current = s;
   const frag = document.createDocumentFragment();
   if (s.next) {
     const n = el('div', 'nextcard');
@@ -334,8 +353,6 @@ function render(s) {
   frag.appendChild(section('Waiting on you', s.blockedLanes.map(blockedRow).concat(s.waiting.map(row)), 'nothing needs you'));
   frag.appendChild(section('Ready', s.ready.map(row), 'nothing new'));
   frag.appendChild(section('Tabs', s.tabs.map(row), 'no Claude tabs open here'));
-  frag.appendChild(el('h2', null, 'Relay lanes'));
-  s.lanes.forEach(function (l) { frag.appendChild(lane(l)); });
   frag.appendChild(footer(s));
   root.replaceChildren(frag);
 }

@@ -158,6 +158,7 @@ class TabQueue implements vscode.Disposable {
       vscode.window.registerWebviewViewProvider('claudeTabQueue.board', this.board, { webviewOptions: { retainContextWhenHidden: true } }),
       this.relay.onDidLand((lane) => this.landed(lane)),
       this.relay.onDidChange(() => this.render()),
+      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeTabQueue') && this.render()),
       vscode.window.tabGroups.onDidChangeTabs((e) => this.tabsChanged(e)),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.tabsChanged()),
       vscode.window.onDidChangeWindowState(() => this.tabsChanged()),
@@ -408,6 +409,22 @@ class TabQueue implements vscode.Disposable {
     this.render();
   }
 
+  toggleSound(): void {
+    void this.updateSetting('sound', !settings.sound);
+  }
+
+  // One switch for both pop-ups: the in-window toast and the macOS banner.
+  toggleToast(): void {
+    const on = !settings.toast;
+    void Promise.all([this.updateSetting('toast', on), this.updateSetting('macNotification', on)]);
+  }
+
+  private async updateSetting(key: string, value: boolean): Promise<void> {
+    await vscode.workspace.getConfiguration('claudeTabQueue').update(key, value, vscode.ConfigurationTarget.Global);
+    this.log.info(`${key} ${value ? 'on' : 'off'}`);
+    this.render();
+  }
+
   private unmute(why: string): void {
     try {
       fs.unlinkSync(QUIET_FILE);
@@ -517,6 +534,10 @@ class TabQueue implements vscode.Disposable {
         return void this.popOut();
       case 'toggleQuiet':
         return this.toggleQuiet();
+      case 'toggleSound':
+        return this.toggleSound();
+      case 'toggleToast':
+        return this.toggleToast();
       case 'next':
         return void this.next();
       case 'balance':
@@ -738,6 +759,8 @@ class TabQueue implements vscode.Disposable {
     const lanes = this.relay.lanes.map((lane) => this.laneRow(lane, entries));
     return {
       quiet: this.quiet ? { held: this.held.length } : undefined,
+      sound: settings.sound,
+      toast: settings.toast,
       usage: this.usage && {
         meters: this.usage.meters.map((m) => ({ label: m.label, percent: m.percent, resetsIn: resetsIn(m.resetsAt) })),
         spend: this.usage.spend,
@@ -871,6 +894,8 @@ export function activate(context: vscode.ExtensionContext): void {
     command('next', () => queue.next()),
     command('jump', () => queue.jump()),
     command('toggleQuiet', () => queue.toggleQuiet()),
+    command('toggleSound', () => queue.toggleSound()),
+    command('toggleToast', () => queue.toggleToast()),
     command('openLog', () => log.show()),
     command('refresh', () => {
       queue.seed();

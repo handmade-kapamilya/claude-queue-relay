@@ -75,7 +75,7 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
-    this.wire(view.webview, view.onDidDispose);
+    this.wire(view.webview, view.onDidDispose, 'sidebar');
     view.onDidDispose(() => (this.view = undefined));
   }
 
@@ -90,7 +90,7 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
       retainContextWhenHidden: true,
     });
     this.panel = panel;
-    this.wire(panel.webview, panel.onDidDispose);
+    this.wire(panel.webview, panel.onDidDispose, 'panel');
     panel.onDidDispose(() => (this.panel = undefined));
     return true;
   }
@@ -104,9 +104,9 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
     this.panel?.dispose();
   }
 
-  private wire(webview: vscode.Webview, onDidDispose: vscode.Event<void>): void {
+  private wire(webview: vscode.Webview, onDidDispose: vscode.Event<void>, surface: 'sidebar' | 'panel'): void {
     webview.options = { enableScripts: true };
-    webview.html = html();
+    webview.html = html(surface);
     const sub = webview.onDidReceiveMessage((m: BoardMessage) => {
       if (m.type !== 'ready') return this.onMessage(m);
       if (this.last) void webview.postMessage({ type: 'snapshot', snapshot: this.last });
@@ -116,20 +116,10 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
 }
 
 const CSS = `
-body { margin: 0; padding: 8px 10px 20px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
-.header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-.rings { width: 84px; height: 84px; flex: none; }
-.rings circle { fill: none; stroke-width: 6; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
-.track { stroke: var(--vscode-widget-border, rgba(128,128,128,.3)); }
-.legend { font-size: 12px; line-height: 1.55; color: var(--vscode-descriptionForeground); min-width: 0; }
-.legend b { color: var(--vscode-foreground); }
-.toolbar { display: flex; gap: 6px; margin-left: auto; }
-button { font: inherit; font-size: 12px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 4px; padding: 3px 9px; cursor: pointer; }
-button:hover { background: var(--vscode-button-hoverBackground); }
-button.on { background: var(--vscode-charts-yellow); color: #1b1b1b; }
-.nextcard { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--vscode-focusBorder); cursor: pointer; margin: 6px 0 4px; }
-.nextcard:hover { background: var(--vscode-list-hoverBackground); }
+body { margin: 0; padding: 8px 10px 64px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
 .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
+.nextcard { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--vscode-focusBorder); cursor: pointer; margin: 2px 0 4px; }
+.nextcard:hover { background: var(--vscode-list-hoverBackground); }
 .nextcard .label { font-weight: 600; margin: 2px 0; }
 h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); margin: 14px 0 3px; font-weight: 600; }
 .row { display: flex; gap: 8px; align-items: center; padding: 5px 6px; border-radius: 5px; cursor: pointer; }
@@ -157,6 +147,19 @@ details[open] .chev { transform: rotate(90deg); }
 .empty { color: var(--vscode-descriptionForeground); padding: 3px 6px; font-style: italic; font-size: 12px; }
 .y { color: var(--vscode-charts-yellow); } .o { color: var(--vscode-charts-orange); } .r { color: var(--vscode-charts-red); }
 .g { color: var(--vscode-charts-green); } .b { color: var(--vscode-charts-blue); } .dim { opacity: .6; }
+/* Meter strip: frozen at the bottom while the list scrolls. */
+.footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
+body.panel .footer { background: var(--vscode-editor-background); }
+.rings { width: 42px; height: 42px; flex: none; }
+.rings circle { fill: none; stroke-width: 3; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
+.track { stroke: #b79d70; stroke-opacity: .14; }
+.legend { font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground); min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; }
+.legend b { color: #b79d70; font-weight: 600; }
+.legend .l2 b { opacity: .78; } .legend .l3 b { opacity: .58; }
+.tools { display: flex; gap: 4px; flex: none; }
+.ib { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 5px; color: var(--vscode-descriptionForeground); cursor: pointer; }
+.ib:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-foreground); }
+.ib.on { color: #b79d70; background: rgba(183, 157, 112, .18); }
 `;
 
 const SCRIPT = `
@@ -259,46 +262,47 @@ function lane(l) {
   d.appendChild(kids);
   return d;
 }
-function header(s) {
-  const wrap = el('div', 'header');
+const GOLD = '#b79d70';
+const MUTE = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6h2.6L8 3.5v9L5.1 10H2.5z"/><path d="M10.5 6.5l3 3M13.5 6.5l-3 3"/></svg>';
+const POPOUT = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H3.5v9h9V9"/><path d="M9.5 3h3.5v3.5M13 3L7.5 8.5"/></svg>';
+function iconButton(markup, title, on, onclick) {
+  const b = el('span', 'ib' + (on ? ' on' : ''));
+  b.appendChild(svg(markup)); b.title = title; b.onclick = onclick;
+  return b;
+}
+function footer(s) {
+  const bar = el('div', 'footer');
   const meters = s.usage && s.usage.meters ? s.usage.meters.slice(0, 3) : [];
-  const radii = [26, 20, 14];
+  const radii = [17, 12.6, 8.2], alpha = [1, 0.62, 0.38];
   let circles = '';
   meters.forEach(function (m, i) {
     const r = radii[i], c = 2 * Math.PI * r, off = c * (1 - Math.min(100, m.percent) / 100);
-    const col = m.percent >= 90 ? 'var(--vscode-charts-red)' : m.percent >= 70 ? 'var(--vscode-charts-orange)' : 'var(--vscode-charts-blue)';
-    circles += '<circle class="track" cx="30" cy="30" r="' + r + '"/><circle cx="30" cy="30" r="' + r + '" stroke="' + col + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>';
+    circles += '<circle class="track" cx="20" cy="20" r="' + r + '"/><circle cx="20" cy="20" r="' + r + '" stroke="' + GOLD + '" stroke-opacity="' + alpha[i] + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>';
   });
-  const center = meters[0] ? Math.round(meters[0].percent) + '%' : '\\u2013';
-  wrap.appendChild(svg('<svg class="rings" viewBox="0 0 60 60">' + circles + '<text x="30" y="31" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" font-family="inherit" fill="currentColor">' + center + '</text></svg>'));
+  const rings = svg('<svg class="rings" viewBox="0 0 40 40">' + circles + '</svg>');
+  rings.setAttribute('title', s.usage && s.usage.spend ? s.usage.spend : 'Claude usage');
+  bar.appendChild(rings);
   const legend = el('div', 'legend');
   if (meters.length) {
-    meters.forEach(function (m) {
-      const line = el('div');
+    meters.forEach(function (m, i) {
+      const line = el('div', 'l' + (i + 1));
       line.appendChild(el('b', null, m.label + ' ' + Math.round(m.percent) + '%'));
-      if (m.resetsIn) line.appendChild(document.createTextNode(' \\u00b7 resets in ' + m.resetsIn));
+      if (m.resetsIn) line.appendChild(document.createTextNode(' · ' + m.resetsIn));
       legend.appendChild(line);
     });
-    if (s.usage.spend) legend.appendChild(el('div', null, s.usage.spend));
   } else {
-    legend.appendChild(el('div', null, s.usage && s.usage.error ? 'usage: ' + s.usage.error : 'usage: loading\\u2026'));
+    legend.appendChild(el('div', null, s.usage && s.usage.error ? 'usage: ' + s.usage.error : 'usage: loading…'));
   }
-  wrap.appendChild(legend);
-  const tools = el('div', 'toolbar');
-  const q = el('button', s.quiet ? 'on' : '', s.quiet ? 'Quiet \\u00b7 ' + s.quiet.held + ' held' : 'Quiet 1h');
-  q.title = s.quiet ? 'Click to end quiet hour now' : 'Hold all pings for an hour; money / failed / BLOCKED still break through';
-  q.onclick = function () { send({ type: 'toggleQuiet' }); };
-  tools.appendChild(q);
-  const p = el('button', '', 'Pop out');
-  p.title = 'Open this board as its own window (drag it to your sidecar, then View: Toggle Full Screen)';
-  p.onclick = function () { send({ type: 'popOut' }); };
-  tools.appendChild(p);
-  wrap.appendChild(tools);
-  return wrap;
+  legend.title = s.usage && s.usage.spend ? s.usage.spend : '';
+  bar.appendChild(legend);
+  const tools = el('div', 'tools');
+  tools.appendChild(iconButton(MUTE, s.quiet ? 'Quiet on · ' + s.quiet.held + ' held · click to end' : 'Quiet for an hour (money / failed / BLOCKED still break through)', !!s.quiet, function () { send({ type: 'toggleQuiet' }); }));
+  tools.appendChild(iconButton(POPOUT, 'Pop out into its own window', false, function () { send({ type: 'popOut' }); }));
+  bar.appendChild(tools);
+  return bar;
 }
 function render(s) {
   const frag = document.createDocumentFragment();
-  frag.appendChild(header(s));
   if (s.next) {
     const n = el('div', 'nextcard');
     n.appendChild(el('div', 'k', 'Next \\u00b7 \\u2303\\u2318U'));
@@ -312,13 +316,14 @@ function render(s) {
   frag.appendChild(section('Tabs', s.tabs.map(row), 'no Claude tabs open here'));
   frag.appendChild(el('h2', null, 'Relay lanes'));
   s.lanes.forEach(function (l) { frag.appendChild(lane(l)); });
+  frag.appendChild(footer(s));
   root.replaceChildren(frag);
 }
 `;
 
-function html(): string {
+function html(surface: 'sidebar' | 'panel'): string {
   const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>${CSS}</style></head><body><div id="root"></div><script nonce="${nonce}">${SCRIPT}</script></body></html>`;
+<style>${CSS}</style></head><body class="${surface}"><div id="root"></div><script nonce="${nonce}">${SCRIPT}</script></body></html>`;
 }

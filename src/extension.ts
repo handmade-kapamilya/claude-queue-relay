@@ -23,7 +23,6 @@ const LANDING_WORDS: Partial<Record<LaneStage, string>> = {
   abandoned: 'abandoned',
 };
 const QUIET_FILE = path.join(BASE_DIR, 'quiet');
-const QUIET_MS = 60 * 60_000;
 // What Alex should look at first, in order.
 const RANK = { money: 0, waiting: 1, failed: 2, blocked: 3, landed: 4, file: 5, ready: 6 } as const;
 type Rank = keyof typeof RANK;
@@ -140,7 +139,7 @@ class TabQueue implements vscode.Disposable {
   private readonly pendingPins = new Set<string>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly held: Announcement[] = [];
-  private quietUntil = 0;
+  private muted = false;
   private usage?: Usage;
   private dancing = false;
   private seenTimer?: NodeJS.Timeout;
@@ -371,7 +370,7 @@ class TabQueue implements vscode.Disposable {
     if (a.tab) void this.pin(a.tab);
     if (this.quiet && !a.gate) {
       this.held.push(a);
-      this.log.info(`held (quiet): ${a.headline}`);
+      this.log.info(`held (muted): ${a.headline}`);
       return this.render();
     }
     if (claim(a.key)) this.ping(a.headline, a.detail, a.sound);
@@ -388,48 +387,38 @@ class TabQueue implements vscode.Disposable {
     void vscode.window.showInformationMessage(message, action).then((choice) => choice && onAction());
   }
 
-  // --- quiet hour ----------------------------------------------------------
+  // --- mute ----------------------------------------------------------------
 
   private get quiet(): boolean {
-    return this.quietUntil > Date.now();
+    return this.muted;
   }
 
+  // The flag file is shared by every window and can be flipped by any script or Claude session.
   private loadQuiet(): void {
-    try {
-      this.quietUntil = Number(fs.readFileSync(QUIET_FILE, 'utf8')) || 0;
-    } catch {
-      this.quietUntil = 0;
-    }
+    this.muted = fs.existsSync(QUIET_FILE);
   }
 
   toggleQuiet(): void {
-    if (this.quiet) {
-      this.endQuiet('Quiet off');
-    } else {
-      this.quietUntil = Date.now() + QUIET_MS;
-      fs.writeFileSync(QUIET_FILE, String(this.quietUntil));
-      this.log.info('quiet for an hour');
+    if (this.muted) this.unmute('Unmuted');
+    else {
+      fs.writeFileSync(QUIET_FILE, 'on');
+      this.muted = true;
+      this.log.info('muted');
     }
     this.render();
   }
 
-  tick(): void {
-    if (this.quietUntil && !this.quiet) this.endQuiet('Quiet hour over');
-    this.render();
-  }
-
-  private endQuiet(why: string): void {
-    const ended = this.quietUntil;
-    this.quietUntil = 0;
+  private unmute(why: string): void {
     try {
       fs.unlinkSync(QUIET_FILE);
     } catch {
       // another window already removed it
     }
+    this.muted = false;
     const held = this.held.splice(0);
     this.log.info(`${why}; releasing ${held.length} held`);
     if (!held.length) return;
-    if (claim(`digest-${ended}`)) this.ping(`${why}`, `${held.length} thing${held.length === 1 ? '' : 's'} landed while you focused`, 'ready');
+    if (claim(`digest-${Date.now() >> 12}`)) this.ping(why, `${held.length} thing${held.length === 1 ? '' : 's'} landed while muted`, 'ready');
     const lines = held.slice(0, 3).map((a) => `${a.headline}: ${a.detail}`);
     this.toast(`${why}: ${held.length} landed. ${lines.join(' · ')}`, 'Show queue', () => run('claudeTabQueue.board.focus'));
   }
@@ -718,7 +707,7 @@ class TabQueue implements vscode.Disposable {
     const first = this.ladder()[0];
     const lanes = this.relay.lanes.map((lane) => this.laneRow(lane, entries));
     return {
-      quiet: this.quiet ? { until: this.quietUntil, held: this.held.length } : undefined,
+      quiet: this.quiet ? { held: this.held.length } : undefined,
       usage: this.usage && {
         meters: this.usage.meters.map((m) => ({ label: m.label, percent: m.percent, resetsIn: resetsIn(m.resetsAt) })),
         spend: this.usage.spend,
@@ -743,7 +732,7 @@ class TabQueue implements vscode.Disposable {
     const first = this.ladder()[0];
     const urgent = !!first && first.rank <= RANK.blocked;
     this.status.text = this.quiet
-      ? `$(bell-slash) Quiet · ${this.held.length} held`
+      ? `$(bell-slash) Muted · ${this.held.length} held`
       : first
         ? `$(bell-dot) ${first.label.slice(0, 36)}`
         : '$(bell) Claude: all quiet';
@@ -833,7 +822,6 @@ export function activate(context: vscode.ExtensionContext): void {
       queue.seed(true);
       queue.reconcile();
     }, 2 * 60_000),
-    setInterval(() => queue.tick(), 60_000),
     setInterval(() => void queue.refreshUsage(), 5 * 60_000),
     ...[20_000, 60_000].map((ms) => setTimeout(() => queue.seed(true), ms)),
   ];

@@ -11,16 +11,16 @@ out into its own window, that answers "what needs me?" at a glance.
 - **Next / Jump.** `⌃⌘U` goes straight to the most important tab (money gate > waiting >
   failed > BLOCKED lane > landed lane > file > ready, oldest first). `⌃⌘J` opens a picker
   of every tab and lane. The status bar shows only the Next item.
-- **Quiet for an hour.** `⇧⌥⌘J` (or the board button, or `touch ~/.claude-tab-queue/quiet`)
-  holds all pings for 60 minutes; money / failed / BLOCKED lanes still break through; one
-  digest when it ends.
+- **Mute.** `⇧⌥⌘J` (or the speaker icon, or `touch ~/.claude-tab-queue/quiet`) holds all
+  pings until you unmute; money / failed / BLOCKED lanes still break through; one digest of
+  what landed when you unmute.
 - **Relay lanes.** Watches `~/Documents/hk-relay{,-2,-3}`. A tab that sends a task to a lane
   gets that lane's number as its icon, is renamed `N️⃣ <task name>`, and appears under the
   lane. Lanes show READY → RUNNING → COMPLETE | PARTIAL | BLOCKED (BLOCKED = caution, and it
   moves into "Waiting on you"), expand to Result / Now / Queued items, and clicking a lane
   opens its Cowork session.
-- **Usage rings.** 5-hour, 7-day and per-model limits with reset countdowns, from the same
-  call `/usage` makes, plus credits used.
+- **Usage meters.** A 5-hour line meter plus 7-day and per-model rings (used part solid gold,
+  unused part dotted) with reset countdowns, from the same call `/usage` makes; credits on hover.
 - **Age colors.** Waiting rows turn amber after 20 minutes and red after 60; a running tab
   with no activity for 20 minutes is flagged.
 - **Pop out.** The "Pop out" button opens the board as an editor and moves it into its own
@@ -63,4 +63,4 @@ Log: `Claude Tab Queue: Open Log`, or `~/.claude-tab-queue/log.txt`.
 ## Settings
 
 `claudeTabQueue.pinMode` (immediate | onNextSwitch | off), `sound`, `macNotification`,
-`toast`, `markUnread`, `pinnedRow`, `relayLanes`, `extraRoots`. Quiet is a mode, not a setting.
+`toast`, `markUnread`, `pinnedRow`, `relayLanes`, `extraRoots`. Mute is a mode, not a setting.

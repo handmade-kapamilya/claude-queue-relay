@@ -45,7 +45,7 @@ export interface MeterRow {
 }
 
 export interface Snapshot {
-  quiet?: { until: number; held: number };
+  quiet?: { held: number };
   usage?: { meters: MeterRow[]; spend?: string; error?: string };
   next?: { label: string; text: string };
   blockedLanes: LaneRow[];
@@ -116,7 +116,7 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
 }
 
 const CSS = `
-body { margin: 0; padding: 8px 10px 64px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
+body { margin: 0; padding: 8px 10px 84px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
 .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
 .nextcard { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--vscode-focusBorder); cursor: pointer; margin: 2px 0 4px; }
 .nextcard:hover { background: var(--vscode-list-hoverBackground); }
@@ -148,14 +148,19 @@ details[open] .chev { transform: rotate(90deg); }
 .y { color: var(--vscode-charts-yellow); } .o { color: var(--vscode-charts-orange); } .r { color: var(--vscode-charts-red); }
 .g { color: var(--vscode-charts-green); } .b { color: var(--vscode-charts-blue); } .dim { opacity: .6; }
 /* Meter strip: frozen at the bottom while the list scrolls. */
-.footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
+.footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 7px 10px 8px; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
+.strip { display: flex; align-items: center; gap: 10px; }
 body.panel .footer { background: var(--vscode-editor-background); }
 .rings { width: 42px; height: 42px; flex: none; }
 .rings circle { fill: none; stroke-width: 3; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
-.track { stroke: #b79d70; stroke-opacity: .14; }
+.track { stroke: #b79d70; stroke-opacity: .5; stroke-dasharray: 0.9 3.1; }
+.bar { position: relative; height: 3px; margin: 8px 0 3px; background: radial-gradient(circle, rgba(183,157,112,.55) 0.9px, transparent 1.3px) 0 50% / 6px 3px repeat-x; }
+.bar .used { position: absolute; left: 0; top: 0; bottom: 0; background: #b79d70; border-radius: 2px; }
+.bartext { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bartext b { color: #b79d70; font-weight: 600; }
 .legend { font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground); min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; }
 .legend b { color: #b79d70; font-weight: 600; }
-.legend .l2 b { opacity: .78; } .legend .l3 b { opacity: .58; }
+.legend .l2 b { opacity: .62; }
 .tools { display: flex; gap: 4px; flex: none; }
 .ib { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 5px; color: var(--vscode-descriptionForeground); cursor: pointer; }
 .ib:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-foreground); }
@@ -272,8 +277,11 @@ function iconButton(markup, title, on, onclick) {
 }
 function footer(s) {
   const bar = el('div', 'footer');
-  const meters = s.usage && s.usage.meters ? s.usage.meters.slice(0, 3) : [];
-  const radii = [17, 12.6, 8.2], alpha = [1, 0.62, 0.38];
+  const strip = el('div', 'strip');
+  const all = s.usage && s.usage.meters ? s.usage.meters : [];
+  const five = all.find(function (m) { return m.label === '5h'; });
+  const meters = all.filter(function (m) { return m !== five; }).slice(0, 2);
+  const radii = [17, 11.4], alpha = [1, 0.62];
   let circles = '';
   meters.forEach(function (m, i) {
     const r = radii[i], c = 2 * Math.PI * r, off = c * (1 - Math.min(100, m.percent) / 100);
@@ -281,7 +289,7 @@ function footer(s) {
   });
   const rings = svg('<svg class="rings" viewBox="0 0 40 40">' + circles + '</svg>');
   rings.setAttribute('title', s.usage && s.usage.spend ? s.usage.spend : 'Claude usage');
-  bar.appendChild(rings);
+  strip.appendChild(rings);
   const legend = el('div', 'legend');
   if (meters.length) {
     meters.forEach(function (m, i) {
@@ -294,11 +302,23 @@ function footer(s) {
     legend.appendChild(el('div', null, s.usage && s.usage.error ? 'usage: ' + s.usage.error : 'usage: loading…'));
   }
   legend.title = s.usage && s.usage.spend ? s.usage.spend : '';
-  bar.appendChild(legend);
+  strip.appendChild(legend);
   const tools = el('div', 'tools');
-  tools.appendChild(iconButton(MUTE, s.quiet ? 'Quiet on · ' + s.quiet.held + ' held · click to end' : 'Quiet for an hour (money / failed / BLOCKED still break through)', !!s.quiet, function () { send({ type: 'toggleQuiet' }); }));
+  tools.appendChild(iconButton(MUTE, s.quiet ? 'Muted · ' + s.quiet.held + ' held · click to unmute' : 'Mute pings (money / failed / BLOCKED still break through)', !!s.quiet, function () { send({ type: 'toggleQuiet' }); }));
   tools.appendChild(iconButton(POPOUT, 'Pop out into its own window', false, function () { send({ type: 'popOut' }); }));
-  bar.appendChild(tools);
+  strip.appendChild(tools);
+  bar.appendChild(strip);
+  if (five) {
+    const line = el('div', 'bar');
+    const used = el('div', 'used');
+    used.style.width = Math.min(100, five.percent) + '%';
+    line.appendChild(used);
+    bar.appendChild(line);
+    const text = el('div', 'bartext');
+    text.appendChild(el('b', null, '5h ' + Math.round(five.percent) + '%'));
+    text.appendChild(document.createTextNode(five.resetsIn ? ' · resets in ' + five.resetsIn : ''));
+    bar.appendChild(text);
+  }
   return bar;
 }
 function render(s) {

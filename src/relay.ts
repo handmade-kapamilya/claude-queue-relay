@@ -21,6 +21,7 @@ export interface LaneTask {
   status: string;
   returnTo?: string;
   position?: number;
+  chained: boolean;
 }
 
 // Lane lifecycle (lane CLAUDE.md): READY → RUNNING → COMPLETE | PARTIAL | BLOCKED → CONSUMED.
@@ -92,6 +93,7 @@ function toTask(role: TaskRole, f: LaneFile, position?: number): LaneTask {
     status: statusWord(f),
     returnTo: cleanReturnTo(f.fields['RETURN-TO']),
     position,
+    chained: !!(f.fields.AFTER ?? f.fields.DEPENDS_ON ?? f.fields.CHAIN),
   };
 }
 
@@ -236,6 +238,26 @@ export class RelayWatcher implements vscode.Disposable {
       if (hit) out.push(lane.n);
     }
     return out;
+  }
+
+  // Load = the task in flight plus everything queued behind it.
+  load(lane: Lane): number {
+    return (lane.current ? 1 : 0) + lane.queue.length;
+  }
+
+  // Moves a queued task file into another lane's queue; that lane's drain.sh picks it up next.
+  moveQueued(task: LaneTask, to: Lane): void {
+    const from = this.lanes.find((l) => l.queue.includes(task));
+    if (!from || from === to) return;
+    const dir = path.join(to.dir, 'relay', 'queue');
+    fs.mkdirSync(dir, { recursive: true });
+    let dest = path.join(dir, path.basename(task.file));
+    if (fs.existsSync(dest)) dest = dest.replace(/\.md$/, `-from-lane-${from.n}.md`);
+    const text = fs.readFileSync(task.file, 'utf8').replace(/^(TASK_ID:.*)$/m, `$1\nMOVED:     lane ${from.n} → lane ${to.n} by Claude Tab Queue`);
+    fs.writeFileSync(dest, text);
+    fs.unlinkSync(task.file);
+    this.refresh(from);
+    this.refresh(to);
   }
 
   markSeen(n: number): void {

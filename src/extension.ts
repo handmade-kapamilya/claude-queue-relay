@@ -519,6 +519,8 @@ class TabQueue implements vscode.Disposable {
         return this.toggleQuiet();
       case 'next':
         return void this.next();
+      case 'balance':
+        return this.balance();
     }
   }
 
@@ -608,6 +610,34 @@ class TabQueue implements vscode.Disposable {
     );
     const chosen = await vscode.window.showQuickPick(items, { placeHolder: 'Jump to a Claude tab or relay lane', matchOnDescription: true });
     await chosen?.run?.();
+  }
+
+  // Move queued tasks from the fullest lane to the emptiest until no lane is 2+ ahead.
+  balance(): void {
+    const moved: string[] = [];
+    for (let guard = 0; guard < 9; guard++) {
+      const lanes = [...this.relay.lanes].sort((a, b) => this.relay.load(b) - this.relay.load(a));
+      const from = lanes[0];
+      const to = lanes[lanes.length - 1];
+      if (!from || !to || this.relay.load(from) - this.relay.load(to) < 2) break;
+      const task = [...from.queue].reverse().find((t) => !t.chained);
+      if (!task) break;
+      this.relay.moveQueued(task, to);
+      this.retag(task.returnTo, from.n, to.n);
+      moved.push(`"${laneTaskLabel(task)}" ${from.n} → ${to.n}`);
+    }
+    this.log.info(moved.length ? `balanced lanes: ${moved.join('; ')}` : 'balance: lanes already even');
+    if (!moved.length) return void vscode.window.setStatusBarMessage('Lanes are already even', 2500);
+    this.toast(`Evened out the lanes: ${moved.join(' · ')}`, 'Show queue', () => run('claudeTabQueue.board.focus'));
+    this.render();
+  }
+
+  // The tab that sent a moved task now waits on the new lane.
+  private retag(returnTo: string | undefined, from: number, to: number): void {
+    const session = returnTo ? this.sessionTitled(returnTo) : undefined;
+    if (!session) return;
+    session.lanes = [...session.lanes.filter((n) => n !== from), to].sort();
+    void this.retitle(session, (title) => title.replace(new RegExp(`^${from}️?⃣`), LANE_EMOJI[to - 1] ?? String(to)));
   }
 
   markAllSeen(): void {

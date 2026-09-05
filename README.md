@@ -23,6 +23,9 @@ out into its own window, that answers "what needs me?" at a glance.
   unused part dotted) with reset countdowns, from the same call `/usage` makes; credits on hover.
 - **Age colors.** Waiting rows turn amber after 20 minutes and red after 60; a running tab
   with no activity for 20 minutes is flagged.
+- **Even out the lanes.** The ⇄ button moves queued tasks from the fullest lane to the emptiest
+  (never the task in flight, never chained tasks) and re-tags the sending tab to its new lane.
+- **Shortcuts.** The keycap icon slides up a sheet listing every hotkey and board gesture.
 - **Pop out.** The "Pop out" button opens the board as an editor and moves it into its own
   window; drag it to a second screen and use View: Toggle Full Screen.
 

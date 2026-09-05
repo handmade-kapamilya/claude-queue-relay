@@ -63,6 +63,7 @@ export type BoardMessage =
   | { type: 'popOut' }
   | { type: 'toggleQuiet' }
   | { type: 'next' }
+  | { type: 'balance' }
   | { type: 'ready' };
 
 // One HTML board, shown in the sidebar and, popped out, as an editor that can float on a sidecar.
@@ -144,6 +145,11 @@ h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color:
 .lanes { display: flex; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
 .seg { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px 0; cursor: pointer; color: #b79d70; font-weight: 700; font-size: 13px; border-left: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
 .seg:first-child { border-left: 0; }
+.seg.tool { flex: 0 0 34px; color: var(--vscode-descriptionForeground); }
+.seg.tool:hover { color: #b79d70; }
+.keys { padding: 6px 8px; }
+.keys .kr { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
+.keys kbd { font: 600 11px var(--vscode-editor-font-family, monospace); color: #1b1b1b; background: #b79d70; border-radius: 4px; padding: 1px 6px; min-width: 52px; text-align: center; }
 .seg:hover { background: var(--vscode-list-hoverBackground); }
 .seg.open { background: #b79d70; color: #1b1b1b; }
 .sd { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -255,25 +261,55 @@ function laneBar(s) {
     if (mark) seg.appendChild(mark);
     seg.title = 'Lane ' + l.n + ' \\u00b7 ' + l.text;
     seg.onclick = function () {
-      if (state.openLane === l.n) return closeDrawer();
-      state.openLane = l.n; vscode.setState(state); render(current);
+      if (state.openLane === l.n && !state.showKeys) return closeDrawer();
+      state.openLane = l.n; state.showKeys = false; vscode.setState(state); render(current);
     };
     bar.appendChild(seg);
   });
+  const even = el('div', 'seg tool');
+  even.appendChild(svg(BALANCE));
+  even.title = 'Even out the lanes';
+  even.onclick = function () { send({ type: 'balance' }); };
+  bar.appendChild(even);
   return bar;
 }
 function closeDrawer() {
   const d = document.querySelector('.drawer');
   if (d) d.classList.remove('open');
-  setTimeout(function () { state.openLane = null; shownLane = null; vscode.setState(state); render(current); }, 260);
+  setTimeout(function () { state.openLane = null; state.showKeys = false; shownLane = null; vscode.setState(state); render(current); }, 260);
+}
+function keysSheet() {
+  const inner = el('div', 'inner keys');
+  const head = el('div', 'dh');
+  head.appendChild(el('b', null, 'Shortcuts'));
+  head.appendChild(el('span', 'meta', ''));
+  const x = el('span', 'cw', 'close');
+  x.onclick = closeDrawer;
+  head.appendChild(x);
+  inner.appendChild(head);
+  SHORTCUTS.forEach(function (pair) {
+    const row = el('div', 'kr');
+    row.appendChild(el('kbd', null, pair[0]));
+    row.appendChild(el('span', null, pair[1]));
+    inner.appendChild(row);
+  });
+  return inner;
+}
+function reveal(d, key) {
+  if (shownLane === key) d.classList.add('open');
+  else requestAnimationFrame(function () { requestAnimationFrame(function () { d.classList.add('open'); }); });
+  shownLane = key;
 }
 function drawer(s) {
   const d = el('div', 'drawer');
+  if (state.showKeys) {
+    d.appendChild(keysSheet());
+    reveal(d, 'keys');
+    return d;
+  }
   const l = s.lanes.find(function (x) { return x.n === state.openLane; });
   if (!l) return d;
-  if (shownLane === l.n) d.classList.add('open');
-  else requestAnimationFrame(function () { requestAnimationFrame(function () { d.classList.add('open'); }); });
-  shownLane = l.n;
+  reveal(d, l.n);
   const inner = el('div', 'inner');
   const head = el('div', 'dh');
   head.appendChild(el('b', null, 'Lane ' + l.n));
@@ -297,6 +333,18 @@ function drawer(s) {
 }
 const GOLD = '#b79d70';
 const MUTE = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6h2.6L8 3.5v9L5.1 10H2.5z"/><path d="M10.5 6.5l3 3M13.5 6.5l-3 3"/></svg>';
+const BALANCE = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h9M9 3l2.5 2.5L9 8"/><path d="M13.5 10.5h-9M7 8l-2.5 2.5L7 13"/></svg>';
+const KEYS = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.5" width="12" height="11" rx="2.5"/><path d="M5 10.5h6"/><path d="M5 6.5h.01M8 6.5h.01M11 6.5h.01"/></svg>';
+const SHORTCUTS = [
+  ['\\u2303\\u2318U', 'Go to what needs you next'],
+  ['\\u2303\\u2318J', 'Jump to any tab or lane'],
+  ['\\u21E7\\u2325\\u2318J', 'Mute / unmute pings'],
+  ['\\u2303Tab', 'VS Code tab switcher (works with the tab bar hidden)'],
+  ['1 2 3', 'Click a lane number to slide its queue up'],
+  ['\\u21C4', 'Even out the lanes (moves queued tasks, never the one in flight)'],
+  ['Cowork \\u2197', 'Open that lane in Cowork'],
+  ['\\u2197', 'Pop the board out into its own window']
+];
 const POPOUT = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H3.5v9h9V9"/><path d="M9.5 3h3.5v3.5M13 3L7.5 8.5"/></svg>';
 function iconButton(markup, title, on, onclick) {
   const b = el('span', 'ib' + (on ? ' on' : ''));
@@ -335,6 +383,10 @@ function footer(s) {
   strip.appendChild(legend);
   const tools = el('div', 'tools');
   tools.appendChild(iconButton(MUTE, s.quiet ? 'Muted · ' + s.quiet.held + ' held · click to unmute' : 'Mute pings (money / failed / BLOCKED still break through)', !!s.quiet, function () { send({ type: 'toggleQuiet' }); }));
+  tools.appendChild(iconButton(KEYS, 'Shortcuts', !!state.showKeys, function () {
+    if (state.showKeys) return closeDrawer();
+    state.showKeys = true; vscode.setState(state); render(current);
+  }));
   tools.appendChild(iconButton(POPOUT, 'Pop out into its own window', false, function () { send({ type: 'popOut' }); }));
   strip.appendChild(tools);
   bar.appendChild(strip);

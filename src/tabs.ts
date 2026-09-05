@@ -17,6 +17,16 @@ export function claudeTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter(isClaudeTab);
 }
 
+export function activeClaudeTab(): vscode.Tab | undefined {
+  const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+  return isClaudeTab(active) ? active : undefined;
+}
+
+// Alex is looking at this tab: it is the active editor of a VS Code window that has OS focus.
+export function looking(tab: vscode.Tab): boolean {
+  return vscode.window.state.focused && activeClaudeTab()?.label === tab.label;
+}
+
 export function locate(tab: vscode.Tab): TabLocation | undefined {
   for (const group of vscode.window.tabGroups.all) {
     const index = group.tabs.indexOf(tab);
@@ -45,8 +55,10 @@ async function run(cmd: string, ...args: unknown[]): Promise<void> {
   await vscode.commands.executeCommand(cmd, ...args);
 }
 
-// VS Code has no API to reorder or pin a tab that isn't active, so every
-// reorder briefly activates the target and then restores whatever was active.
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// VS Code has no API to reorder, pin, or rename a tab that isn't active, so every
+// such action briefly activates the target and then restores whatever was active.
 export async function activate(tab: vscode.Tab): Promise<boolean> {
   const loc = locate(tab);
   if (!loc) return false;
@@ -61,7 +73,21 @@ export async function focusClaudeInput(): Promise<void> {
   try {
     await run('claude-vscode.focus');
   } catch {
-    // command is optional; only exists while the Claude Code extension is loaded
+    // only exists while the Claude Code extension is loaded
+  }
+}
+
+async function whileActive<T>(tab: vscode.Tab, work: () => Promise<T>): Promise<T | undefined> {
+  const prev = vscode.window.tabGroups.activeTabGroup.activeTab;
+  const wasActive = prev === tab;
+  if (!wasActive && !(await activate(tab))) return undefined;
+  try {
+    return await work();
+  } finally {
+    if (!wasActive && prev) {
+      await activate(prev);
+      if (isClaudeTab(prev)) await focusClaudeInput();
+    }
   }
 }
 
@@ -71,31 +97,19 @@ export interface PinOptions {
 }
 
 export async function pinToFront(tab: vscode.Tab, opts: PinOptions): Promise<boolean> {
-  const prev = vscode.window.tabGroups.activeTabGroup.activeTab;
-  const wasActive = prev === tab;
-  if (!wasActive && !(await activate(tab))) return false;
-  try {
+  const wasActive = vscode.window.tabGroups.activeTabGroup.activeTab === tab;
+  const done = await whileActive(tab, async () => {
     if (!tab.isPinned) await run('workbench.action.pinEditor');
     await run('moveActiveEditor', { to: 'first', by: 'tab' });
-    if (opts.markUnread && !wasActive) {
-      try {
-        await run('claude-vscode.markSessionUnread');
-      } catch (err) {
-        opts.log(`markSessionUnread failed: ${err}`);
-      }
+    if (!opts.markUnread || wasActive) return true;
+    try {
+      await run('claude-vscode.markSessionUnread');
+    } catch (err) {
+      opts.log(`markSessionUnread failed: ${err}`);
     }
-  } finally {
-    if (!wasActive && prev) {
-      await activate(prev);
-      if (isClaudeTab(prev)) await focusClaudeInput();
-    }
-  }
-  return true;
-}
-
-export function activeClaudeTab(): vscode.Tab | undefined {
-  const active = vscode.window.tabGroups.activeTabGroup.activeTab;
-  return isClaudeTab(active) ? active : undefined;
+    return true;
+  });
+  return done === true;
 }
 
 // Keyed by label rather than Tab identity: VS Code may hand out a new Tab
@@ -105,4 +119,26 @@ export async function unpinActive(label: string): Promise<boolean> {
   if (!active || active.label !== label) return false;
   if (active.isPinned) await run('workbench.action.unpinEditor');
   return true;
+}
+
+// Claude Code's rename command only offers an input box, so we feed it through the clipboard:
+// the box opens with the current title selected, paste replaces it, Enter accepts.
+export async function renameTab(tab: vscode.Tab, name: string): Promise<boolean> {
+  const done = await whileActive(tab, async () => {
+    const clipboard = await vscode.env.clipboard.readText();
+    await vscode.env.clipboard.writeText(name);
+    try {
+      const rename = vscode.commands.executeCommand('claude-vscode.renameSessionTab');
+      await pause(200);
+      await run('editor.action.clipboardPasteAction');
+      await pause(80);
+      await run('workbench.action.acceptSelectedQuickOpenItem');
+      const outcome = await Promise.race([rename.then(() => 'renamed'), pause(3000).then(() => 'timeout')]);
+      if (outcome === 'timeout') await run('workbench.action.closeQuickOpen');
+      return outcome === 'renamed';
+    } finally {
+      await vscode.env.clipboard.writeText(clipboard);
+    }
+  });
+  return done === true;
 }

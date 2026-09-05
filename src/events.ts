@@ -13,6 +13,7 @@ export interface HookEvent {
   last_assistant_message?: string;
   user_prompt?: string;
   agent_id?: string;
+  tool_input?: { file_path?: string; command?: string };
   reason?: string;
   error?: string;
   file: string;

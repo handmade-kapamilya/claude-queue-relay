@@ -1,8 +1,8 @@
 {
   "name": "claude-tab-queue",
   "displayName": "Claude Tab Queue",
-  "description": "Pings you and moves a Claude Code session tab to the front of the tab bar when it finishes or needs your input. Also watches hk-relay lanes.",
-  "version": "0.2.0",
+  "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, one board (sidebar or pop-out) with lane-aware tabs, relay lanes that open in Cowork, and Claude usage rings.",
+  "version": "0.3.0",
   "publisher": "alex-holtzman",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
@@ -68,6 +68,33 @@
         "command": "claudeTabQueue.openLog",
         "title": "Open Log",
         "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.openCowork",
+        "title": "Open Relay Lane in Cowork",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.popOut",
+        "title": "Pop Out Board",
+        "category": "Claude Tab Queue",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "claudeTabQueue.next",
+        "title": "Go To What Needs You Next",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.jump",
+        "title": "Jump To Tab or Lane",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.toggleQuiet",
+        "title": "Quiet For An Hour",
+        "category": "Claude Tab Queue",
+        "icon": "$(bell-slash)"
       }
     ],
     "viewsContainers": {
@@ -82,7 +109,8 @@
     "views": {
       "claudeTabQueue": [
         {
-          "id": "claudeTabQueue.queue",
+          "type": "webview",
+          "id": "claudeTabQueue.board",
           "name": "Queue"
         }
       ]
@@ -90,14 +118,24 @@
     "menus": {
       "view/title": [
         {
-          "command": "claudeTabQueue.clear",
-          "when": "view == claudeTabQueue.queue",
+          "command": "claudeTabQueue.popOut",
+          "when": "view == claudeTabQueue.board",
           "group": "navigation@1"
         },
         {
-          "command": "claudeTabQueue.refresh",
-          "when": "view == claudeTabQueue.queue",
+          "command": "claudeTabQueue.toggleQuiet",
+          "when": "view == claudeTabQueue.board",
           "group": "navigation@2"
+        },
+        {
+          "command": "claudeTabQueue.clear",
+          "when": "view == claudeTabQueue.board",
+          "group": "navigation@3"
+        },
+        {
+          "command": "claudeTabQueue.refresh",
+          "when": "view == claudeTabQueue.board",
+          "group": "navigation@4"
         }
       ]
     },
@@ -160,7 +198,24 @@
           "description": "Extra folders whose Claude sessions this window should own, in addition to the workspace folders."
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "claudeTabQueue.next",
+        "key": "ctrl+cmd+u",
+        "mac": "ctrl+cmd+u"
+      },
+      {
+        "command": "claudeTabQueue.jump",
+        "key": "ctrl+cmd+j",
+        "mac": "ctrl+cmd+j"
+      },
+      {
+        "command": "claudeTabQueue.toggleQuiet",
+        "key": "shift+alt+cmd+j",
+        "mac": "shift+alt+cmd+j"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

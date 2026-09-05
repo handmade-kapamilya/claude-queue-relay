@@ -8,8 +8,10 @@ import { Session, SessionRegistry, Transition } from './sessions';
 import { readSessionTitle } from './titles';
 import * as tabs from './tabs';
 import { SoundKind, claim, cleanupClaims, macNotify, playSound } from './notify';
-import { QueueView, sessionLabel } from './queueView';
-import { Lane, LaneStage, RelayWatcher, laneIsResult, laneTaskLabel } from './relay';
+import { Age, Board, BoardMessage, LaneRow, Row, Snapshot } from './board';
+import { Lane, LaneStage, LaneTask, RelayWatcher, laneIsResult, laneLook, laneTaskLabel, taskNameIn } from './relay';
+import { openCowork } from './cowork';
+import { Usage, currentUsage, resetsIn } from './usage';
 import { BASE_DIR, EVENTS_DIR, hooksInstalled, installHooks } from './hooks';
 
 const HOME = os.homedir();
@@ -20,9 +22,18 @@ const LANDING_WORDS: Partial<Record<LaneStage, string>> = {
   blocked: 'BLOCKED, needs you',
   abandoned: 'abandoned',
 };
+const QUIET_FILE = path.join(BASE_DIR, 'quiet');
+const QUIET_MS = 60 * 60_000;
+// What Alex should look at first, in order.
+const RANK = { money: 0, waiting: 1, failed: 2, blocked: 3, landed: 4, file: 5, ready: 6 } as const;
+type Rank = keyof typeof RANK;
+const SIGNAL_RANK: Record<string, Rank> = { money: 'money', failed: 'failed', file: 'file', 'needs-you': 'waiting' };
+// Minutes after which a row turns amber, then red.
+const AGE_LIMITS: Record<string, [number, number]> = { waiting: [20, 60], running: [20, 240], lane: [30, 120] };
 
 const expandHome = (p: string) => p.replace(/^~(?=$|\/)/, HOME);
 const short = (id: string) => id.slice(0, 8);
+const run = (cmd: string, ...args: unknown[]) => vscode.commands.executeCommand(cmd, ...args);
 const setting = <T>(key: string, fallback: T) => vscode.workspace.getConfiguration('claudeTabQueue').get<T>(key, fallback);
 
 const settings = {
@@ -35,6 +46,34 @@ const settings = {
   get relayLanes() { return setting<string[]>('relayLanes', []).map(expandHome); },
   get extraRoots() { return setting<string[]>('extraRoots', []).map(expandHome); },
 };
+
+interface Announcement {
+  key: string;
+  headline: string;
+  detail: string;
+  sound: SoundKind;
+  gate: boolean;
+  tab?: vscode.Tab;
+  toast: boolean;
+  action: string;
+  run: () => unknown;
+}
+
+interface LaneTouch {
+  n: number;
+  action: 'assign' | 'release';
+  file?: string;
+}
+
+type Entry = Row & { since: number; session?: Session; tab?: vscode.Tab };
+
+interface Step {
+  rank: number;
+  since: number;
+  label: string;
+  text: string;
+  run: () => unknown;
+}
 
 function processAlive(pid: number): boolean {
   try {
@@ -71,32 +110,62 @@ function liveSessions(): Array<{ sessionId: string; cwd: string }> {
   return live;
 }
 
+function sessionLabel(s: Session): string {
+  return s.title ?? s.tabLabel ?? `${path.basename(s.cwd)} · ${short(s.id)}`;
+}
+
+function age(since: number, kind: string): Age {
+  const minutes = Math.floor((Date.now() - since) / 60_000);
+  const text = minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const [stale, old] = AGE_LIMITS[kind] ?? [Infinity, Infinity];
+  return { text, tier: minutes >= old ? 'old' : minutes >= stale ? 'stale' : 'fresh' };
+}
+
+function watchQuietFile(onChange: () => void): vscode.Disposable {
+  try {
+    const watcher = fs.watch(BASE_DIR, (_, name) => name === 'quiet' && onChange());
+    watcher.on('error', () => {});
+    return { dispose: () => watcher.close() };
+  } catch {
+    return { dispose: () => {} };
+  }
+}
+
 class TabQueue implements vscode.Disposable {
   private readonly registry = new SessionRegistry();
   private readonly relay: RelayWatcher;
-  private readonly view: QueueView;
+  private readonly board = new Board((m) => this.onBoard(m));
   private readonly status = vscode.window.createStatusBarItem('claudeTabQueue.status', vscode.StatusBarAlignment.Left, 50);
   private readonly pinnedByUs = new Set<string>();
   private readonly pendingPins = new Set<string>();
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly held: Announcement[] = [];
+  private quietUntil = 0;
+  private usage?: Usage;
   private dancing = false;
   private seenTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
 
-  constructor(context: vscode.ExtensionContext, private readonly log: Log) {
+  constructor(private readonly log: Log) {
     this.relay = new RelayWatcher(settings.relayLanes, log);
-    this.view = new QueueView(this.registry, this.relay, vscode.Uri.joinPath(context.extensionUri, 'media'));
     this.status.name = 'Claude Tab Queue';
-    this.status.command = 'claudeTabQueue.showQueue';
+    this.status.command = 'claudeTabQueue.next';
     this.status.show();
+    this.loadQuiet();
     this.disposables.push(
       this.relay,
       this.status,
-      vscode.window.createTreeView('claudeTabQueue.queue', { treeDataProvider: this.view }),
+      this.board,
+      vscode.window.registerWebviewViewProvider('claudeTabQueue.board', this.board, { webviewOptions: { retainContextWhenHidden: true } }),
       this.relay.onDidLand((lane) => this.landed(lane)),
       this.relay.onDidChange(() => this.render()),
       vscode.window.tabGroups.onDidChangeTabs((e) => this.tabsChanged(e)),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.tabsChanged()),
+      vscode.window.onDidChangeWindowState(() => this.tabsChanged()),
+      watchQuietFile(() => {
+        this.loadQuiet();
+        this.render();
+      }),
     );
   }
 
@@ -114,6 +183,10 @@ class TabQueue implements vscode.Disposable {
     return this.roots().some((root) => cwd === root || cwd.startsWith(root + path.sep));
   }
 
+  private sessions(): Session[] {
+    return [...this.registry.sessions.values()];
+  }
+
   // --- hook events ---------------------------------------------------------
 
   handle(event: HookEvent): void {
@@ -123,6 +196,8 @@ class TabQueue implements vscode.Disposable {
     this.logTransition(transition);
     if (event.hook_event_name === 'SessionEnd') return this.forget(session);
     if (event.hook_event_name === 'UserPromptSubmit') this.promptSubmitted(session);
+    const touch = this.laneTouched(event);
+    if (touch) void this.laneTouchedBy(session, touch);
     if (transition.from === 'waiting' && transition.to === 'running' && session.tabLabel) void this.unpin(session.tabLabel);
     if (!session.title) void this.learnTitle(session).then(() => this.render());
     if (transition.to !== transition.from && (transition.to === 'ready' || transition.to === 'waiting')) void this.surface(session, event.file);
@@ -146,6 +221,41 @@ class TabQueue implements vscode.Disposable {
     if (session.tabLabel) void this.unpin(session.tabLabel);
   }
 
+  // The session that writes a lane's inbound/queue file is the one waiting on that lane;
+  // reading the lane's outbound is how it collects the result.
+  private laneTouched(e: HookEvent): LaneTouch | undefined {
+    if (e.hook_event_name !== 'PostToolUse' || !e.tool_input) return undefined;
+    const target = e.tool_input.file_path ?? e.tool_input.command ?? '';
+    const n = settings.relayLanes.findIndex((dir) => target.includes(`${path.basename(dir)}/relay/`)) + 1;
+    if (!n || target.includes('/archive/')) return undefined;
+    const writes = ['Write', 'Edit', 'MultiEdit'].includes(e.tool_name ?? '');
+    const touchesOutbound = /outbound\.md/.test(target);
+    const touchesInbound = /inbound\.md|\/queue\//.test(target);
+    if (e.tool_name === 'Read' && touchesOutbound) return { n, action: 'release' };
+    if (writes && touchesOutbound && !touchesInbound) return { n, action: 'release' };
+    if (writes && touchesInbound) return { n, action: 'assign', file: e.tool_input.file_path };
+    if (e.tool_name === 'Bash' && /send\.sh/.test(target)) return { n, action: 'assign' };
+    if (e.tool_name === 'Bash' && touchesOutbound && !touchesInbound) return { n, action: 'release' };
+    return undefined;
+  }
+
+  private async laneTouchedBy(session: Session, touch: LaneTouch): Promise<void> {
+    const { n, action } = touch;
+    if (action === 'release') {
+      if (!session.lanes.includes(n)) return;
+      session.lanes = session.lanes.filter((lane) => lane !== n);
+      this.log.info(`${short(session.id)} collected lane ${n}`);
+      await this.retitle(session, (title) => title.replace(new RegExp(`^${n}️?⃣\\s*`), ''));
+      return;
+    }
+    if (!session.lanes.includes(n)) session.lanes = [...session.lanes, n].sort();
+    const lane = this.relay.lanes[n - 1];
+    const name = (touch.file && taskNameIn(touch.file)) || (lane && taskNameIn(path.join(lane.dir, 'relay', 'inbound.md')));
+    this.log.info(`${short(session.id)} sent "${name ?? '?'}" to lane ${n}`);
+    if (name) await this.retitle(session, () => `${LANE_EMOJI[n - 1] ?? n} ${name}`);
+    this.render();
+  }
+
   // --- titles and tabs -----------------------------------------------------
 
   private async learnTitle(session: Session): Promise<void> {
@@ -154,6 +264,27 @@ class TabQueue implements vscode.Disposable {
     if (!title || title === session.title) return;
     session.title = title;
     this.log.info(`title ${short(session.id)} = "${title}"`);
+  }
+
+  private async retitle(session: Session, rename: (current: string) => string): Promise<void> {
+    await this.learnTitle(session);
+    const tab = this.tabOf(session);
+    if (!tab) return;
+    const current = session.title ?? tab.label;
+    const next = rename(current);
+    if (next === current || this.dancing) return;
+    this.dancing = true;
+    try {
+      const ok = await tabs.renameTab(tab, next);
+      this.log.info(`${ok ? 'renamed' : 'could not rename'} "${current}" → "${next}"`);
+      if (!ok) return;
+      session.title = next;
+      session.tabLabel = tab.label;
+    } catch (err) {
+      this.log.warn(`rename failed for "${current}": ${err}`);
+    } finally {
+      this.dancing = false;
+    }
   }
 
   private tabOf(session: Session): vscode.Tab | undefined {
@@ -181,10 +312,6 @@ class TabQueue implements vscode.Disposable {
     session.tabLabel = active.label;
   }
 
-  private sessions(): Session[] {
-    return [...this.registry.sessions.values()];
-  }
-
   private sessionTitled(title: string): Session | undefined {
     return this.sessions().find((s) => s.title === title || (!!s.tabLabel && tabs.labelMatches(s.tabLabel, title)));
   }
@@ -201,15 +328,21 @@ class TabQueue implements vscode.Disposable {
   private async surface(session: Session, eventFile: string): Promise<void> {
     await this.learnTitle(session);
     const tab = this.tabOf(session);
+    const label = sessionLabel(session);
     const waiting = session.state === 'waiting';
-    const headline = `${session.signal?.emoji ?? (waiting ? '⚠️' : '✅')} ${sessionLabel(session)}`;
-    const detail = session.reason ?? (waiting ? 'needs your input' : 'finished');
-    const sound: SoundKind = waiting ? 'waiting' : session.signal?.kind === 'failed' ? 'failed' : 'ready';
-    if (claim(`evt-${eventFile}`)) this.ping(headline, detail, sound);
-    if (!tab) return this.log.info(`surface ${short(session.id)} "${sessionLabel(session)}": no tab in this window`);
-    this.toast(`${headline}: ${detail}`, 'Go to tab', () => this.goToSession(session.id));
-    await this.pin(tab);
-    this.render();
+    const kind = session.signal?.kind;
+    if (tab && tabs.looking(tab)) return this.log.info(`"${label}" finished in front of Alex; staying quiet`);
+    this.announce({
+      key: `evt-${eventFile}`,
+      headline: `${session.signal?.emoji ?? (waiting ? '⚠️' : '✅')} ${label}`,
+      detail: session.signal?.action ?? session.reason ?? (waiting ? 'needs your input' : 'finished'),
+      sound: waiting ? 'waiting' : kind === 'failed' ? 'failed' : 'ready',
+      gate: kind === 'money' || kind === 'failed',
+      tab,
+      toast: !!tab,
+      action: 'Go to tab',
+      run: () => this.goToSession(session.id),
+    });
   }
 
   private landed(lane: Lane): void {
@@ -219,13 +352,30 @@ class TabQueue implements vscode.Disposable {
     const session = returnTo ? this.sessionTitled(returnTo) : undefined;
     const tab = session ? this.tabOf(session) : returnTo ? tabs.findByLabel(returnTo) : undefined;
     const emoji = LANE_EMOJI[lane.n - 1] ?? `#${lane.n}`;
-    const headline = `${emoji} Relay lane ${lane.n} ${LANDING_WORDS[lane.stage] ?? lane.stage}`;
-    const detail = `${name}${returnTo ? ` → «${returnTo}»` : ''}. Say "check relay ${lane.n}"`;
     this.log.info(`relay lane ${lane.n} ${lane.stage}: ${name}${returnTo ? ` return-to "${returnTo}"` : ''}${tab ? ' (tab found)' : ''}`);
-    if (claim(`relay-${lane.n}-${Math.round(lane.outbound.mtime)}`)) this.ping(headline, detail, lane.stage === 'blocked' ? 'waiting' : 'relay');
-    this.toast(`${headline}: ${detail}`, tab ? 'Go to tab' : 'Open result', () => (tab ? this.goToTab(tab.label) : this.openLaneFile(lane.n)));
-    if (tab) void this.pin(tab);
+    this.announce({
+      key: `relay-${lane.n}-${Math.round(lane.outbound.mtime)}`,
+      headline: `${emoji} Relay lane ${lane.n} ${LANDING_WORDS[lane.stage] ?? lane.stage}`,
+      detail: `${name}${returnTo ? ` → «${returnTo}»` : ''}. Say "check relay ${lane.n}"`,
+      sound: lane.stage === 'blocked' ? 'waiting' : 'relay',
+      gate: lane.stage === 'blocked',
+      tab,
+      toast: true,
+      action: tab ? 'Go to tab' : 'Open result',
+      run: () => (tab ? this.goToTab(tab.label) : this.openLaneFile(lane.n)),
+    });
     this.render();
+  }
+
+  private announce(a: Announcement): void {
+    if (a.tab) void this.pin(a.tab);
+    if (this.quiet && !a.gate) {
+      this.held.push(a);
+      this.log.info(`held (quiet): ${a.headline}`);
+      return this.render();
+    }
+    if (claim(a.key)) this.ping(a.headline, a.detail, a.sound);
+    if (a.toast) this.toast(`${a.headline}: ${a.detail}`, a.action, a.run);
   }
 
   private ping(headline: string, detail: string, sound: SoundKind): void {
@@ -236,6 +386,52 @@ class TabQueue implements vscode.Disposable {
   private toast(message: string, action: string, onAction: () => unknown): void {
     if (!settings.toast) return;
     void vscode.window.showInformationMessage(message, action).then((choice) => choice && onAction());
+  }
+
+  // --- quiet hour ----------------------------------------------------------
+
+  private get quiet(): boolean {
+    return this.quietUntil > Date.now();
+  }
+
+  private loadQuiet(): void {
+    try {
+      this.quietUntil = Number(fs.readFileSync(QUIET_FILE, 'utf8')) || 0;
+    } catch {
+      this.quietUntil = 0;
+    }
+  }
+
+  toggleQuiet(): void {
+    if (this.quiet) {
+      this.endQuiet('Quiet off');
+    } else {
+      this.quietUntil = Date.now() + QUIET_MS;
+      fs.writeFileSync(QUIET_FILE, String(this.quietUntil));
+      this.log.info('quiet for an hour');
+    }
+    this.render();
+  }
+
+  tick(): void {
+    if (this.quietUntil && !this.quiet) this.endQuiet('Quiet hour over');
+    this.render();
+  }
+
+  private endQuiet(why: string): void {
+    const ended = this.quietUntil;
+    this.quietUntil = 0;
+    try {
+      fs.unlinkSync(QUIET_FILE);
+    } catch {
+      // another window already removed it
+    }
+    const held = this.held.splice(0);
+    this.log.info(`${why}; releasing ${held.length} held`);
+    if (!held.length) return;
+    if (claim(`digest-${ended}`)) this.ping(`${why}`, `${held.length} thing${held.length === 1 ? '' : 's'} landed while you focused`, 'ready');
+    const lines = held.slice(0, 3).map((a) => `${a.headline}: ${a.detail}`);
+    this.toast(`${why}: ${held.length} landed. ${lines.join(' · ')}`, 'Show queue', () => run('claudeTabQueue.board.focus'));
   }
 
   // --- pinning -------------------------------------------------------------
@@ -291,7 +487,7 @@ class TabQueue implements vscode.Disposable {
     if (this.dancing) return;
     clearTimeout(this.seenTimer);
     const active = tabs.activeClaudeTab();
-    if (active) {
+    if (active && vscode.window.state.focused) {
       this.pinNextPending(active.label);
       this.seenTimer = setTimeout(() => this.viewed(active), 1500);
     }
@@ -306,6 +502,7 @@ class TabQueue implements vscode.Disposable {
   }
 
   private viewed(tab: vscode.Tab): void {
+    if (!tabs.looking(tab)) return;
     const session = this.sessionOnTab(tab);
     if (session?.state === 'ready' && !session.seenAt) {
       session.seenAt = Date.now();
@@ -316,6 +513,25 @@ class TabQueue implements vscode.Disposable {
   }
 
   // --- navigation ----------------------------------------------------------
+
+  private onBoard(m: BoardMessage): void {
+    switch (m.type) {
+      case 'goToSession':
+        return void this.goToSession(m.id);
+      case 'goToTab':
+        return void this.goToTab(m.label);
+      case 'openCowork':
+        return this.openCowork(m.n);
+      case 'openLaneFile':
+        return void this.openLaneFile(m.n, m.file);
+      case 'popOut':
+        return void this.popOut();
+      case 'toggleQuiet':
+        return this.toggleQuiet();
+      case 'next':
+        return void this.next();
+    }
+  }
 
   async goToSession(id: string): Promise<void> {
     const session = this.registry.sessions.get(id);
@@ -336,6 +552,12 @@ class TabQueue implements vscode.Disposable {
     await tabs.focusClaudeInput();
   }
 
+  openCowork(n: number): void {
+    const found = openCowork(n);
+    this.log.info(`open Cowork lane ${n}: ${found ? 'session found' : 'no HK-RELAY session, opened Claude'}`);
+    if (!found) void vscode.window.showWarningMessage(`No Cowork session named HK-RELAY-${n} found; opened Claude instead.`);
+  }
+
   async openLaneFile(n: number, file?: string): Promise<void> {
     const lane = this.relay.lanes.find((l) => l.n === n);
     if (!lane) return;
@@ -349,10 +571,191 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
+  // Going to a landed lane means going to the tab that will say "check relay N".
+  private collect(lane: Lane): Promise<void> {
+    const returnTo = lane.result?.returnTo;
+    const session = returnTo ? this.sessionTitled(returnTo) : undefined;
+    if (session) return this.goToSession(session.id);
+    const tab = returnTo ? tabs.findByLabel(returnTo) : undefined;
+    return tab ? this.goToTab(tab.label) : this.openLaneFile(lane.n);
+  }
+
+  async popOut(): Promise<void> {
+    if (!this.board.popOut()) return;
+    await run('workbench.action.moveEditorToNewWindow');
+    this.log.info('board popped out into its own window');
+    this.render();
+  }
+
+  async next(): Promise<void> {
+    const first = this.ladder()[0];
+    if (!first) return void vscode.window.setStatusBarMessage('Claude queue: nothing needs you', 2500);
+    await first.run();
+  }
+
+  async jump(): Promise<void> {
+    type Pick = vscode.QuickPickItem & { run?: () => unknown };
+    const entries = this.rows();
+    const items: Pick[] = [];
+    const add = (title: string, list: Pick[]) => {
+      if (!list.length) return;
+      items.push({ label: title, kind: vscode.QuickPickItemKind.Separator }, ...list);
+    };
+    const pick = (e: Entry): Pick => ({
+      label: `${e.lanes.map((n) => LANE_EMOJI[n - 1] ?? `#${n}`).join('')}${e.emoji ? `${e.emoji} ` : ''}${e.label}`,
+      description: e.text,
+      run: () => (e.sessionId ? this.goToSession(e.sessionId) : this.goToTab(e.tabLabel ?? e.label)),
+    });
+    add('Waiting on you', entries.filter((e) => e.state === 'waiting').map(pick));
+    add('Ready', entries.filter((e) => e.state === 'ready' && !e.seen).map(pick));
+    add('Tabs', entries.map(pick));
+    add(
+      'Relay lanes',
+      this.relay.lanes.map((lane) => ({
+        label: `${LANE_EMOJI[lane.n - 1]} Lane ${lane.n}`,
+        description: laneLook(lane).description,
+        run: () => this.openCowork(lane.n),
+      })),
+    );
+    const chosen = await vscode.window.showQuickPick(items, { placeHolder: 'Jump to a Claude tab or relay lane', matchOnDescription: true });
+    await chosen?.run?.();
+  }
+
   markAllSeen(): void {
     for (const s of this.sessions()) if (s.state === 'ready') s.seenAt ??= Date.now();
     for (const lane of this.relay.lanes) this.relay.markSeen(lane.n);
     this.pendingPins.clear();
+    this.render();
+  }
+
+  // --- the board -----------------------------------------------------------
+
+  // Every open Claude tab in tab order, joined to its session when known, then sessions with no tab here.
+  private rows(): Entry[] {
+    const sessions = this.sessions().filter((s) => s.state !== 'ended');
+    const used = new Set<Session>();
+    const entries: Entry[] = [];
+    for (const tab of tabs.claudeTabs()) {
+      const session =
+        sessions.find((s) => !used.has(s) && s.tab === tab) ??
+        sessions.find((s) => !used.has(s) && !!s.title && tabs.labelMatches(tab.label, s.title)) ??
+        sessions.find((s) => !used.has(s) && !s.title && s.tabLabel === tab.label);
+      if (session) used.add(session);
+      entries.push(this.entry(session, tab));
+    }
+    for (const s of sessions) if (!used.has(s)) entries.push(this.entry(s, undefined));
+    return entries;
+  }
+
+  private entry(session: Session | undefined, tab: vscode.Tab | undefined): Entry {
+    const label = session?.title ?? tab?.label ?? (session ? sessionLabel(session) : 'tab');
+    const lanes = new Set<number>(session?.lanes ?? []);
+    for (const n of this.relay.lanesFor([label, tab?.label, session?.title, session?.tabLabel])) lanes.add(n);
+    const base = { label, tabLabel: tab?.label ?? session?.tabLabel, lanes: [...lanes].sort(), hasTab: !!tab, tab };
+    if (!session) return { ...base, key: `t:${label}`, state: 'idle', text: 'no activity yet', seen: true, since: 0 };
+    const state = session.state === 'ended' ? 'idle' : session.state;
+    const a = age(state === 'running' ? session.lastEventAt : session.since, state);
+    const ask = session.signal?.action ?? session.reason;
+    const text =
+      state === 'waiting'
+        ? `${ask ?? 'needs you'} · waiting ${a.text}`
+        : state === 'running'
+          ? `running ${a.text}`
+          : state === 'ready'
+            ? `${ask ?? 'finished'} · ${a.text === 'just now' ? a.text : `${a.text} ago`}`
+            : `idle · ${a.text}`;
+    return {
+      ...base,
+      key: `s:${session.id}`,
+      sessionId: session.id,
+      state,
+      emoji: session.signal && session.signal.kind !== 'lane' ? session.signal.emoji : undefined,
+      text,
+      age: a,
+      seen: !!session.seenAt,
+      since: session.since,
+      session,
+    };
+  }
+
+  private laneRow(lane: Lane, entries: Entry[]): LaneRow {
+    const inFlight = lane.stage === 'running' || lane.stage === 'ready';
+    const a = inFlight ? age(lane.inbound.mtime, 'lane') : undefined;
+    const tasks = [lane.result, lane.current, ...lane.queue].filter((t): t is LaneTask => !!t);
+    return {
+      n: lane.n,
+      stage: lane.stage,
+      text: laneLook(lane).description + (a ? ` · ${a.text}` : ''),
+      age: a,
+      seen: lane.seen,
+      tasks: tasks.map((t) => ({ role: t.role, label: laneTaskLabel(t), status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
+      tabs: entries.filter((e) => e.lanes.includes(lane.n)).map((e) => ({ label: e.label, sessionId: e.sessionId, tabLabel: e.tabLabel })),
+    };
+  }
+
+  private ladder(): Step[] {
+    const steps: Step[] = [];
+    for (const e of this.rows()) {
+      const s = e.session;
+      if (!s) continue;
+      const rank: Rank | undefined =
+        s.state === 'waiting' ? 'waiting' : s.state === 'ready' && !s.seenAt ? (SIGNAL_RANK[s.signal?.kind ?? ''] ?? 'ready') : undefined;
+      if (!rank) continue;
+      steps.push({ rank: RANK[rank], since: s.since, label: e.label, text: e.text, run: () => this.goToSession(s.id) });
+    }
+    for (const lane of this.relay.lanes) {
+      const text = laneLook(lane).description;
+      if (lane.stage === 'blocked') steps.push({ rank: RANK.blocked, since: lane.landedAt ?? 0, label: `Relay lane ${lane.n} BLOCKED`, text, run: () => this.collect(lane) });
+      else if (laneIsResult(lane) && !lane.seen) steps.push({ rank: RANK.landed, since: lane.landedAt ?? 0, label: `Relay lane ${lane.n} landed`, text, run: () => this.collect(lane) });
+    }
+    return steps.sort((a, b) => a.rank - b.rank || a.since - b.since);
+  }
+
+  private snapshot(): Snapshot {
+    const entries = this.rows();
+    const bySince = (a: Entry, b: Entry) => b.since - a.since;
+    const strip = ({ since, session, tab, ...row }: Entry): Row => row;
+    const first = this.ladder()[0];
+    const lanes = this.relay.lanes.map((lane) => this.laneRow(lane, entries));
+    return {
+      quiet: this.quiet ? { until: this.quietUntil, held: this.held.length } : undefined,
+      usage: this.usage && {
+        meters: this.usage.meters.map((m) => ({ label: m.label, percent: m.percent, resetsIn: resetsIn(m.resetsAt) })),
+        spend: this.usage.spend,
+        error: this.usage.meters.length ? undefined : this.usage.error,
+      },
+      next: first && { label: first.label, text: first.text },
+      blockedLanes: lanes.filter((l) => l.stage === 'blocked'),
+      waiting: entries.filter((e) => e.state === 'waiting').sort(bySince).map(strip),
+      ready: entries.filter((e) => e.state === 'ready' && !e.seen).sort(bySince).map(strip),
+      tabs: entries.map(strip),
+      lanes,
+    };
+  }
+
+  render(): void {
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => this.paint(), 250);
+  }
+
+  private paint(): void {
+    this.board.show(this.snapshot());
+    const first = this.ladder()[0];
+    const urgent = !!first && first.rank <= RANK.blocked;
+    this.status.text = this.quiet
+      ? `$(bell-slash) Quiet · ${this.held.length} held`
+      : first
+        ? `$(bell-dot) ${first.label.slice(0, 36)}`
+        : '$(bell) Claude: all quiet';
+    const meters = this.usage?.meters.slice(0, 2).map((m) => `${m.label} ${Math.round(m.percent)}%`).join(' · ');
+    if (meters) this.status.text += `  $(pulse) ${meters}`;
+    this.status.backgroundColor = urgent && !this.quiet ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
+    this.status.tooltip = first ? `${first.text}\nClick or ⌃⌘U: go there. ⌃⌘J: jump anywhere.` : 'Claude Tab Queue';
+  }
+
+  async refreshUsage(): Promise<void> {
+    this.usage = await currentUsage();
+    if (this.usage.error) this.log.warn(`usage: ${this.usage.error}`);
     this.render();
   }
 
@@ -384,27 +787,6 @@ class TabQueue implements vscode.Disposable {
     }
     this.render();
   }
-
-  render(): void {
-    const sessions = this.sessions();
-    const counts = {
-      'waiting on you': sessions.filter((s) => s.state === 'waiting').length,
-      ready: sessions.filter((s) => s.state === 'ready' && !s.seenAt).length,
-      'relay landed': this.relay.lanes.filter((l) => laneIsResult(l) && !l.seen).length,
-      'relay blocked': this.relay.lanes.filter((l) => l.stage === 'blocked').length,
-    };
-    const parts = Object.entries(counts).filter(([, n]) => n).map(([what, n]) => `${n} ${what}`);
-    const urgent = counts['waiting on you'] || counts['relay landed'] || counts['relay blocked'];
-    this.status.text = parts.length ? `$(bell-dot) ${parts.join(' · ')}` : '$(bell) Claude: all quiet';
-    this.status.tooltip = 'Claude Tab Queue: click to open the queue';
-    this.status.backgroundColor = urgent ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
-    clearTimeout(this.refreshTimer);
-    this.refreshTimer = setTimeout(() => this.view.refresh(), 250);
-  }
-
-  redraw(): void {
-    this.view.refresh();
-  }
 }
 
 function installHooksInteractively(log: Log): void {
@@ -423,7 +805,7 @@ function installHooksInteractively(log: Log): void {
 function offerHookInstall(): void {
   void vscode.window
     .showInformationMessage('Claude Tab Queue needs its Claude Code hooks installed to see sessions.', 'Install hooks')
-    .then((choice) => choice && vscode.commands.executeCommand('claudeTabQueue.installHooks'));
+    .then((choice) => choice && run('claudeTabQueue.installHooks'));
 }
 
 function enablePinnedRowOnce(context: vscode.ExtensionContext, log: Log): void {
@@ -440,9 +822,9 @@ function enablePinnedRowOnce(context: vscode.ExtensionContext, log: Log): void {
 export function activate(context: vscode.ExtensionContext): void {
   const windowName = vscode.workspace.name ?? path.basename(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? 'window');
   const log = new Log(path.join(BASE_DIR, 'log.txt'), windowName);
-  const queue = new TabQueue(context, log);
+  const queue = new TabQueue(log);
   const spool = new EventSpool(EVENTS_DIR, (event) => queue.handle(event), log);
-  const command = (name: string, run: (...args: any[]) => unknown) => vscode.commands.registerCommand(`claudeTabQueue.${name}`, run);
+  const command = (name: string, fn: (...args: any[]) => unknown) => vscode.commands.registerCommand(`claudeTabQueue.${name}`, fn);
 
   // Claude restarts its CLI processes after a window reload, later than we activate, so keep re-seeding.
   const timers = [
@@ -451,7 +833,8 @@ export function activate(context: vscode.ExtensionContext): void {
       queue.seed(true);
       queue.reconcile();
     }, 2 * 60_000),
-    setInterval(() => queue.redraw(), 30_000),
+    setInterval(() => queue.tick(), 60_000),
+    setInterval(() => void queue.refreshUsage(), 5 * 60_000),
     ...[20_000, 60_000].map((ms) => setTimeout(() => queue.seed(true), ms)),
   ];
 
@@ -460,15 +843,21 @@ export function activate(context: vscode.ExtensionContext): void {
     queue,
     spool,
     { dispose: () => timers.forEach(clearInterval) },
-    command('showQueue', () => vscode.commands.executeCommand('claudeTabQueue.queue.focus')),
+    command('showQueue', () => run('claudeTabQueue.board.focus')),
     command('goToSession', (id: string) => queue.goToSession(id)),
     command('goToTab', (label: string) => queue.goToTab(label)),
     command('openLane', (n: number) => queue.openLaneFile(n)),
     command('openLaneFile', (n: number, file: string) => queue.openLaneFile(n, file)),
+    command('openCowork', (n: number) => queue.openCowork(n)),
+    command('popOut', () => queue.popOut()),
+    command('next', () => queue.next()),
+    command('jump', () => queue.jump()),
+    command('toggleQuiet', () => queue.toggleQuiet()),
     command('openLog', () => log.show()),
     command('refresh', () => {
       queue.seed();
       queue.reconcile();
+      void queue.refreshUsage();
     }),
     command('clear', () => queue.markAllSeen()),
     command('installHooks', () => installHooksInteractively(log)),
@@ -479,6 +868,7 @@ export function activate(context: vscode.ExtensionContext): void {
   if (!hooksInstalled()) offerHookInstall();
   queue.seed();
   queue.render();
+  void queue.refreshUsage();
   log.info(`activated; roots=${queue.roots().join(', ')}; claude tabs=${tabs.claudeTabs().map((t) => `"${t.label}"`).join(', ') || 'none'}`);
 }
 

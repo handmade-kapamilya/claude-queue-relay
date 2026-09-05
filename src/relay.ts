@@ -277,3 +277,8 @@ export class RelayWatcher implements vscode.Disposable {
     this.changed.fire(lane);
   }
 }
+
+export function taskNameIn(file: string): string | undefined {
+  const f = readLaneFile(file);
+  return f.exists ? (f.fields.TASK_NAME ?? f.fields.TASK_ID) : undefined;
+}

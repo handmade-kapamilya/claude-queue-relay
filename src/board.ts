@@ -145,13 +145,13 @@ h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color:
 .seg { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 6px 0; cursor: pointer; color: #b79d70; font-weight: 700; font-size: 13px; border-left: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
 .seg:first-child { border-left: 0; }
 .seg:hover { background: var(--vscode-list-hoverBackground); }
-.seg.open { background: rgba(183,157,112,.18); }
+.seg.open { background: #b79d70; color: #1b1b1b; }
 .sd { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.drawer { max-height: 0; overflow: hidden; transition: max-height .22s ease; }
-.drawer.open { max-height: 300px; overflow: auto; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); }
-.drawer .inner { padding: 8px 6px 8px 10px; }
-.dh { display: flex; align-items: center; gap: 8px; margin: 0 0 4px 6px; }
-.dh b { color: #b79d70; }
+.drawer { max-height: 0; opacity: 0; overflow: hidden; margin: 0 6px; border-radius: 10px 10px 0 0; transition: max-height .26s ease, opacity .2s ease; }
+.drawer.open { max-height: 320px; opacity: 1; overflow: auto; border: 4px solid #b79d70; border-bottom: 0; background: rgba(183,157,112,.12); box-shadow: 0 -8px 22px rgba(0,0,0,.35); }
+.drawer .inner { padding: 8px 6px 8px 8px; }
+.dh { display: flex; align-items: center; gap: 8px; margin: 0 0 6px 4px; }
+.dh b { background: #b79d70; color: #1b1b1b; padding: 1px 9px; border-radius: 999px; font-weight: 700; }
 .dh .meta { flex: 1; }
 .cw { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #b79d70; color: #b79d70; cursor: pointer; white-space: nowrap; }
 .cw:hover { background: rgba(183,157,112,.18); }
@@ -176,6 +176,7 @@ const SCRIPT = `
 const vscode = acquireVsCodeApi();
 const state = vscode.getState() || { openLane: null };
 let current = { blockedLanes: [], waiting: [], ready: [], tabs: [], lanes: [] };
+let shownLane = null;
 const root = document.getElementById('root');
 const LANE = ['1\\uFE0F\\u20E3', '2\\uFE0F\\u20E3', '3\\uFE0F\\u20E3', '4\\uFE0F\\u20E3', '5\\uFE0F\\u20E3'];
 window.addEventListener('message', function (e) { if (e.data && e.data.type === 'snapshot') render(e.data.snapshot); });
@@ -253,15 +254,26 @@ function laneBar(s) {
     const mark = stageMark(l);
     if (mark) seg.appendChild(mark);
     seg.title = 'Lane ' + l.n + ' \\u00b7 ' + l.text;
-    seg.onclick = function () { state.openLane = state.openLane === l.n ? null : l.n; vscode.setState(state); render(current); };
+    seg.onclick = function () {
+      if (state.openLane === l.n) return closeDrawer();
+      state.openLane = l.n; vscode.setState(state); render(current);
+    };
     bar.appendChild(seg);
   });
   return bar;
 }
+function closeDrawer() {
+  const d = document.querySelector('.drawer');
+  if (d) d.classList.remove('open');
+  setTimeout(function () { state.openLane = null; shownLane = null; vscode.setState(state); render(current); }, 260);
+}
 function drawer(s) {
-  const d = el('div', 'drawer' + (state.openLane ? ' open' : ''));
+  const d = el('div', 'drawer');
   const l = s.lanes.find(function (x) { return x.n === state.openLane; });
   if (!l) return d;
+  if (shownLane === l.n) d.classList.add('open');
+  else requestAnimationFrame(function () { requestAnimationFrame(function () { d.classList.add('open'); }); });
+  shownLane = l.n;
   const inner = el('div', 'inner');
   const head = el('div', 'dh');
   head.appendChild(el('b', null, 'Lane ' + l.n));

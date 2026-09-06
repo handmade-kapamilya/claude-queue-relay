@@ -19,6 +19,7 @@ export interface Session {
   seenAt?: number;
   lastEventAt: number;
   lanes: number[];
+  dormant?: boolean;
 }
 
 export interface Transition {

@@ -20,7 +20,8 @@ const HOME = os.homedir();
 const LANE_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
 // Tab titles carry "<status><lane> <task>": ▶️ in flight, ⏭️ next up, ⏳ further back, ✅ landed, ⚠️ blocked.
 const STATUS_EMOJI = { running: '▶️', next: '⏭️', queued: '⏳', landed: '✅', blocked: '⚠️' } as const;
-const LANE_PREFIX = /^(?:[\u25B6\u23ED\u23F3\u2705\u26A0]\uFE0F?)?[1-5]\uFE0F?\u20E3\s*/;
+// Anything short in front of the lane keycap is a prefix we wrote (or a stray character from a rename).
+const LANE_PREFIX = /^[^\s]{0,3}?[1-5]\uFE0F?\u20E3\s*/;
 const LANDING_WORDS: Partial<Record<LaneStage, string>> = {
   complete: 'landed',
   partial: 'landed PARTIAL',
@@ -200,6 +201,10 @@ class TabQueue implements vscode.Disposable {
   private seenTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
   private syncTimer?: NodeJS.Timeout;
+  private titleIndex = new Map<string, { sessionId: string; cwd: string; transcriptPath: string }>();
+  private titleIndexAt = 0;
+  private taskTabs = new Map<string, Set<number>>();
+  private lastFuzzy = new Map<string, string | undefined>();
 
   constructor(private readonly log: Log) {
     this.relay = new RelayWatcher(settings.relayLanes, log);
@@ -254,6 +259,7 @@ class TabQueue implements vscode.Disposable {
     if (event.agent_id || !this.owns(event.cwd)) return;
     const transition = this.registry.apply(event);
     const session = transition.session;
+    session.dormant = false;
     this.logTransition(transition);
     if (event.hook_event_name === 'SessionEnd') return this.forget(session);
     if (event.hook_event_name === 'UserPromptSubmit') this.promptSubmitted(session);
@@ -850,7 +856,10 @@ class TabQueue implements vscode.Disposable {
       if (session?.title) items.push({ key: tab.label, text: session.title });
     }
     const hit = fuzzyPickKey(title, items);
-    this.log.info(hit ? `fuzzy-matched «${title}» → tab "${hit}"` : `no fuzzy match for «${title}» among ${byLabel.size} tabs`);
+    if (this.lastFuzzy.get(title) !== hit) {
+      this.lastFuzzy.set(title, hit);
+      this.log.info(hit ? `fuzzy-matched «${title}» → tab "${hit}"` : `no fuzzy match for «${title}» among ${byLabel.size} tabs`);
+    }
     return hit ? byLabel.get(hit) : undefined;
   }
 
@@ -865,6 +874,7 @@ class TabQueue implements vscode.Disposable {
 
   // Every open Claude tab in tab order, joined to its session when known, then sessions with no tab here.
   private rows(): Entry[] {
+    this.taskTabs = this.tabsByTask();
     const sessions = this.sessions().filter((s) => s.state !== 'ended');
     const used = new Set<Session>();
     const entries: Entry[] = [];
@@ -884,7 +894,7 @@ class TabQueue implements vscode.Disposable {
     const label = session?.title ?? tab?.label ?? (session ? sessionLabel(session) : 'tab');
     const lanes = new Set<number>(session?.lanes ?? []);
     for (const n of this.relay.lanesFor([label, tab?.label, session?.title, session?.tabLabel])) lanes.add(n);
-    if (session) for (const n of this.lanesSentBy(session.id)) lanes.add(n);
+    for (const n of (tab && this.taskTabs.get(tab.label)) ?? []) lanes.add(n);
     const base = { label, tabLabel: tab?.label ?? session?.tabLabel, lanes: [...lanes].sort(), hasTab: !!tab, tab };
     if (!session) return { ...base, key: `t:${label}`, state: 'idle', text: 'no activity yet', seen: true, since: 0 };
     const state = session.state === 'ended' ? 'idle' : session.state;
@@ -897,7 +907,9 @@ class TabQueue implements vscode.Disposable {
           ? `running ${a.text}`
           : state === 'ready'
             ? `${ask ?? 'finished'} · ${a.text === 'just now' ? a.text : `${a.text} ago`}`
-            : `idle · ${a.text}`;
+            : session.dormant
+              ? 'idle'
+              : `idle · ${a.text}`;
     return {
       ...base,
       key: `s:${session.id}`,
@@ -912,12 +924,20 @@ class TabQueue implements vscode.Disposable {
     };
   }
 
-  // Lanes that still hold a task this session sent (in flight, queued, or landed but not collected).
-  private lanesSentBy(sessionId: string): number[] {
-    const senders = readSenders();
-    return this.relay.lanes
-      .filter((lane) => [lane.result, lane.current, ...lane.queue].some((t) => t?.taskId && senders[t.taskId]?.sessionId === sessionId && (t.role !== 'result' || laneIsResult(lane))))
-      .map((lane) => lane.n);
+  // Every lane task resolved to its tab, once per render, so hiding, drawer rows and titles agree.
+  private tabsByTask(): Map<string, Set<number>> {
+    const map = new Map<string, Set<number>>();
+    for (const lane of this.relay.lanes) {
+      for (const task of [lane.result, lane.current, ...lane.queue]) {
+        if (!task || (task.role === 'result' && (!laneIsResult(lane) || lane.seen))) continue;
+        const tab = this.tabFor(task, lane.n, true);
+        if (!tab) continue;
+        const set = map.get(tab.label) ?? new Set<number>();
+        set.add(lane.n);
+        map.set(tab.label, set);
+      }
+    }
+    return map;
   }
 
   private startBlocked(lane: Lane): string | undefined {
@@ -1032,6 +1052,65 @@ class TabQueue implements vscode.Disposable {
       });
     }
     if (!quiet) this.log.info(`seeded ${n} live session(s) from ~/.claude/sessions`);
+    void this.adoptDormantTabs();
+  }
+
+  // A tab whose Claude process hasn't been resumed since the reload has no live session; its
+  // transcript still knows its full title and id, which is enough to track and rename it.
+  private async adoptDormantTabs(): Promise<void> {
+    await this.refreshTitleIndex();
+    let adopted = 0;
+    for (const tab of tabs.claudeTabs()) {
+      if (this.sessionOnTab(tab)) continue;
+      const hit = [...this.titleIndex.entries()].find(([title]) => tabs.labelMatches(tab.label, title));
+      if (!hit) continue;
+      const [title, { sessionId, cwd, transcriptPath }] = hit;
+      if (this.registry.sessions.has(sessionId)) continue;
+      const session = this.registry.ensure(sessionId, cwd);
+      Object.assign(session, { title, transcriptPath, tab, tabLabel: tab.label, dormant: true });
+      adopted++;
+    }
+    if (adopted) {
+      this.log.info(`adopted ${adopted} dormant tab(s) from transcripts`);
+      this.render();
+    }
+  }
+
+  private async refreshTitleIndex(): Promise<void> {
+    if (Date.now() - this.titleIndexAt < 5 * 60_000) return;
+    this.titleIndexAt = Date.now();
+    const projects = path.join(HOME, '.claude', 'projects');
+    const cutoff = Date.now() - 14 * 86_400_000;
+    const index = new Map<string, { sessionId: string; cwd: string; transcriptPath: string }>();
+    for (const root of this.roots()) {
+      const enc = root.replace(/[/.]/g, '-');
+      let dirs: string[];
+      try {
+        dirs = fs.readdirSync(projects).filter((d) => d === enc || d.startsWith(`${enc}-`));
+      } catch {
+        continue;
+      }
+      for (const d of dirs) {
+        const dir = path.join(projects, d);
+        let files: string[];
+        try {
+          files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+        } catch {
+          continue;
+        }
+        for (const f of files) {
+          const transcriptPath = path.join(dir, f);
+          try {
+            if (fs.statSync(transcriptPath).mtimeMs < cutoff) continue;
+          } catch {
+            continue;
+          }
+          const title = await readSessionTitle(transcriptPath);
+          if (title) index.set(title, { sessionId: f.slice(0, -'.jsonl'.length), cwd: root, transcriptPath });
+        }
+      }
+    }
+    this.titleIndex = index;
   }
 
   // Drop sessions whose CLI process is gone and that have been silent for a while.
@@ -1039,7 +1118,7 @@ class TabQueue implements vscode.Disposable {
     const live = new Set(liveSessions().map((s) => s.sessionId));
     const cutoff = Date.now() - 5 * 60_000;
     for (const s of this.sessions()) {
-      if (live.has(s.id) || s.lastEventAt > cutoff) continue;
+      if (live.has(s.id) || s.lastEventAt > cutoff || (s.dormant && this.tabOf(s))) continue;
       this.registry.sessions.delete(s.id);
       this.log.info(`dropped ended session ${short(s.id)} "${sessionLabel(s)}"`);
     }

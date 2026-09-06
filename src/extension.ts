@@ -400,7 +400,10 @@ class TabQueue implements vscode.Disposable {
     if (writes && touchesOutbound && !touchesInbound) return { n, action: 'release' };
     if (writes && touchesInbound) return { n, action: 'assign', file: e.tool_input.file_path };
     if (e.tool_name === 'Bash' && SEND_SCRIPT.test(target)) return { n, action: 'assign' };
-    if (e.tool_name === 'Bash' && touchesOutbound && !touchesInbound) return { n, action: 'release' };
+    // A shell command that reads the outbound (cat/grep/head…) collects the result, even when it also
+    // mentions inbound.md; only a command that writes into inbound counts as a send.
+    const writesInbound = /(?:>>?|\btee\b|\bcp\b|\bmv\b)[^\n]*inbound\.md/.test(target);
+    if (e.tool_name === 'Bash' && touchesOutbound && !writesInbound) return { n, action: 'release' };
     return undefined;
   }
 
@@ -1428,7 +1431,7 @@ class TabQueue implements vscode.Disposable {
     return undefined;
   }
 
-  private laneRow(lane: Lane, entries: Entry[], problems: Problem[]): LaneRow {
+  private laneRow(lane: Lane, problems: Problem[]): LaneRow {
     const inFlight = lane.stage === 'running' || lane.stage === 'ready';
     const a = inFlight ? age(lane.inbound.mtime, 'lane') : undefined;
     const tasks = [lane.result, lane.current, ...lane.queue].filter((t): t is LaneTask => !!t);
@@ -1443,7 +1446,6 @@ class TabQueue implements vscode.Disposable {
       startBlocked: this.startBlocked(lane),
       problems: problems.filter((p) => p.lane === lane.n).length,
       tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), taskId: t.taskId, status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
-      tabs: entries.filter((e) => e.lanes.includes(lane.n)).map(rowOf),
     };
   }
 
@@ -1492,7 +1494,7 @@ class TabQueue implements vscode.Disposable {
         error: this.usage.meters.length ? undefined : this.usage.error,
       },
       rows: visible.map(({ e }) => rowOf(e)),
-      lanes: this.relay.lanes.map((lane) => this.laneRow(lane, entries, problems)),
+      lanes: this.relay.lanes.map((lane) => this.laneRow(lane, problems)),
       problems: problemRows.sort((a, b) => a.lane - b.lane),
     };
   }

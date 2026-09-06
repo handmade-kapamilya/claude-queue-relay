@@ -42,7 +42,6 @@ export interface LaneRow {
   startBlocked?: string;
   problems: number;
   tasks: TaskRow[];
-  tabs: Row[];
 }
 
 export interface ProblemRow {
@@ -443,8 +442,7 @@ function drawer(s) {
     r.appendChild(dismissButton(l, task));
     inner.appendChild(r);
   });
-  l.tabs.forEach(function (tab) { inner.appendChild(row(tab)); });
-  if (!l.tasks.length && !l.tabs.length) inner.appendChild(el('div', 'empty', 'nothing queued'));
+  if (!l.tasks.length) inner.appendChild(el('div', 'empty', 'nothing queued'));
   d.appendChild(inner);
   return d;
 }

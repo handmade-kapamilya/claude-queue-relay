@@ -2,7 +2,7 @@
   "name": "claude-tab-queue",
   "displayName": "Claude Tab Queue",
   "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, one board (sidebar or pop-out) with lane-aware tabs, relay lanes that open in Cowork with a check-up that fixes stuck or orphaned tasks, peek / sweep / snooze, and Claude usage rings.",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "publisher": "alex-holtzman",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,

@@ -188,7 +188,12 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .seg:hover { background: var(--vscode-list-hoverBackground); }
 .seg.open { background: #b79d70; color: #1b1b1b; }
 .sd { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.pd { position: absolute; top: 4px; right: 6px; width: 5px; height: 5px; border-radius: 50%; background: #b79d70; }
+/* A lane with something to look at breathes its own outline instead of wearing a dot. */
+.seg.warn { animation: segglow 2.6s ease-in-out infinite; }
+@keyframes segglow {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(183,157,112,.4), inset 0 0 6px rgba(183,157,112,.12); }
+  50% { box-shadow: inset 0 0 0 1px rgba(183,157,112,.95), inset 0 0 12px rgba(183,157,112,.42); }
+}
 .badge { position: absolute; top: 2px; right: 3px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: #b79d70; color: #1b1b1b; font-size: 9px; font-weight: 700; display: grid; place-items: center; }
 .keys { padding: 6px 8px; }
 .keys .kr { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
@@ -336,11 +341,10 @@ function stageMark(l) {
 function laneBar(s) {
   const bar = el('div', 'lanes');
   s.lanes.forEach(function (l) {
-    const seg = el('div', 'seg' + (state.openLane === l.n ? ' open' : ''));
+    const seg = el('div', 'seg' + (state.openLane === l.n ? ' open' : l.problems ? ' warn' : ''));
     seg.appendChild(el('span', null, String(l.n)));
     const mark = stageMark(l);
     if (mark) seg.appendChild(mark);
-    if (l.problems && state.openLane !== l.n) seg.appendChild(el('span', 'pd'));
     seg.title = 'Lane ' + l.n + ' \\u00b7 ' + l.text + (l.problems ? ' \\u00b7 ' + l.problems + ' to check' : '');
     seg.onclick = function () {
       if (state.openLane === l.n && !state.showKeys && !state.showDoctor) return closeDrawer();

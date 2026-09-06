@@ -8,9 +8,10 @@ out into its own window, that answers "what needs me?" at a glance.
 - **Pings and pins.** When a session finishes or needs input it plays a sound, posts a
   macOS notification and an in-window toast, and pins that tab to the front. If you are
   already looking at the tab, it stays silent and just moves into Ready.
-- **Next / Jump.** `⌃⌘U` goes straight to the most important tab (money gate > waiting >
-  failed > BLOCKED lane > landed lane > file > ready, oldest first). `⌃⌘J` opens a picker
-  of every tab and lane. The status bar shows only the Next item.
+- **One list, icons tell the story.** Needs-you (⚠ / footer emoji) at the top, running (pulsing dot),
+  seen, then idle tabs at the bottom; tabs waiting on a relay lane live in that lane's drawer.
+  `⌃⌘U` goes straight to the most important tab (money > waiting > failed > BLOCKED lane >
+  landed lane > file > ready, oldest first); `⌃⌘J` opens a picker of every tab and lane.
 - **Mute.** `⇧⌥⌘J` (or the speaker icon, or `touch ~/.claude-tab-queue/quiet`) holds all
   pings until you unmute; money / failed / BLOCKED lanes still break through; one digest of
   what landed when you unmute.
@@ -23,6 +24,8 @@ out into its own window, that answers "what needs me?" at a glance.
   unused part dotted) with reset countdowns, from the same call `/usage` makes; credits on hover.
 - **Age colors.** Waiting rows turn amber after 20 minutes and red after 60; a running tab
   with no activity for 20 minutes is flagged.
+- **Receive.** In a lane's drawer, Receive puts the landed result in front of the tab that asked
+  for it: it focuses that tab and types `check relay N` + Enter (needs Accessibility for VS Code).
 - **Even out the lanes.** The ⇄ button moves queued tasks from the fullest lane to the emptiest
   (never the task in flight, never chained tasks) and re-tags the sending tab to its new lane.
 - **Shortcuts.** The keycap icon slides up a sheet listing every hotkey and board gesture.

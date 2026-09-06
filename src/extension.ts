@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -118,6 +119,12 @@ function age(since: number, kind: string): Age {
   const text = minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   const [stale, old] = AGE_LIMITS[kind] ?? [Infinity, Infinity];
   return { text, tier: minutes >= old ? 'old' : minutes >= stale ? 'stale' : 'fresh' };
+}
+
+// Keystrokes land in whatever has focus, so callers activate the tab and focus Claude's input first.
+function typeIntoFocused(text: string): Promise<boolean> {
+  const script = ['-e', `tell application "System Events" to keystroke ${JSON.stringify(text)}`, '-e', 'delay 0.05', '-e', 'tell application "System Events" to key code 36'];
+  return new Promise((resolve) => execFile('osascript', script, (err) => resolve(!err)));
 }
 
 function watchQuietFile(onChange: () => void): vscode.Disposable {
@@ -542,6 +549,10 @@ class TabQueue implements vscode.Disposable {
         return void this.next();
       case 'balance':
         return this.balance();
+      case 'receive':
+        return void this.receive(m.n);
+      case 'goToReturn':
+        return void this.goToReturn(m.returnTo, m.n);
     }
   }
 
@@ -661,6 +672,36 @@ class TabQueue implements vscode.Disposable {
     void this.retitle(session, (title) => title.replace(new RegExp(`^${from}️?⃣`), LANE_EMOJI[to - 1] ?? String(to)));
   }
 
+  // "Receive": put the landed result in front of the tab that asked for it by typing its own trigger phrase.
+  async receive(n: number): Promise<void> {
+    const lane = this.relay.lanes.find((l) => l.n === n);
+    if (!lane) return;
+    const returnTo = lane.result?.returnTo;
+    const tab = this.tabFor(returnTo);
+    if (!tab) return void vscode.window.showWarningMessage(`No open tab here for lane ${n}'s result${returnTo ? ` («${returnTo}»)` : ''}.`);
+    if (!vscode.window.state.focused) return void vscode.window.showWarningMessage('Click into VS Code first, then press Receive again.');
+    await tabs.activate(tab);
+    if (vscode.window.activeTextEditor?.selection.isEmpty !== false) await tabs.focusClaudeInput();
+    await new Promise((r) => setTimeout(r, 350));
+    const typed = await typeIntoFocused(`check relay ${n}`);
+    this.relay.markSeen(n);
+    this.log.info(`receive lane ${n} → "${tab.label}": ${typed ? 'typed' : 'could not type (Accessibility?)'}`);
+    if (!typed) void vscode.window.showWarningMessage(`Couldn't type into the tab (allow VS Code under System Settings → Privacy → Accessibility). Type "check relay ${n}" there.`);
+    this.render();
+  }
+
+  async goToReturn(returnTo: string, n: number): Promise<void> {
+    const tab = this.tabFor(returnTo);
+    if (!tab) return void vscode.window.showWarningMessage(returnTo ? `No open tab here named «${returnTo}» (lane ${n}).` : `Lane ${n}: that task has no RETURN-TO tab.`);
+    await this.focus(tab);
+  }
+
+  private tabFor(returnTo: string | undefined): vscode.Tab | undefined {
+    if (!returnTo) return undefined;
+    const session = this.sessionTitled(returnTo);
+    return (session && this.tabOf(session)) ?? tabs.findByLabel(returnTo);
+  }
+
   markAllSeen(): void {
     for (const s of this.sessions()) if (s.state === 'ready') s.seenAt ??= Date.now();
     for (const lane of this.relay.lanes) this.relay.markSeen(lane.n);
@@ -728,7 +769,8 @@ class TabQueue implements vscode.Disposable {
       text: laneLook(lane).description + (a ? ` · ${a.text}` : ''),
       age: a,
       seen: lane.seen,
-      tasks: tasks.map((t) => ({ role: t.role, label: laneTaskLabel(t), status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
+      landed: laneIsResult(lane),
+      tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
       tabs: entries.filter((e) => e.lanes.includes(lane.n)).map((e) => ({ label: e.label, sessionId: e.sessionId, tabLabel: e.tabLabel })),
     };
   }
@@ -751,12 +793,21 @@ class TabQueue implements vscode.Disposable {
     return steps.sort((a, b) => a.rank - b.rank || a.since - b.since);
   }
 
+  // One list, no sections: what needs Alex first, then running, then seen, then idle at the bottom.
+  // Tabs waiting on a relay lane live in that lane's drawer instead, unless they need input right now.
   private snapshot(): Snapshot {
     const entries = this.rows();
-    const bySince = (a: Entry, b: Entry) => b.since - a.since;
+    const tier = (e: Entry) => (e.state === 'waiting' ? 0 : e.state === 'ready' ? (e.seen ? 3 : 1) : e.state === 'running' ? 2 : 4);
     const strip = ({ since, session, tab, ...row }: Entry): Row => row;
-    const first = this.ladder()[0];
-    const lanes = this.relay.lanes.map((lane) => this.laneRow(lane, entries));
+    const visible = entries.map((e, order) => ({ e, order })).filter(({ e }) => !e.lanes.length || e.state === 'waiting');
+    visible.sort((a, b) => {
+      const ta = tier(a.e);
+      const tb = tier(b.e);
+      if (ta !== tb) return ta - tb;
+      if (ta === 0) return a.e.since - b.e.since;
+      if (ta === 4) return a.order - b.order;
+      return b.e.since - a.e.since;
+    });
     return {
       quiet: this.quiet ? { held: this.held.length } : undefined,
       sound: settings.sound,
@@ -766,12 +817,8 @@ class TabQueue implements vscode.Disposable {
         spend: this.usage.spend,
         error: this.usage.meters.length ? undefined : this.usage.error,
       },
-      next: first && { label: first.label, text: first.text },
-      blockedLanes: lanes.filter((l) => l.stage === 'blocked'),
-      waiting: entries.filter((e) => e.state === 'waiting').sort(bySince).map(strip),
-      ready: entries.filter((e) => e.state === 'ready' && !e.seen).sort(bySince).map(strip),
-      tabs: entries.map(strip),
-      lanes,
+      rows: visible.map(({ e }) => strip(e)),
+      lanes: this.relay.lanes.map((lane) => this.laneRow(lane, entries)),
     };
   }
 

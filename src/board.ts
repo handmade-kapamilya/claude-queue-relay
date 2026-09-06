@@ -34,6 +34,7 @@ export interface LaneRow {
   text: string;
   age?: Age;
   seen: boolean;
+  landed: boolean;
   tasks: TaskRow[];
   tabs: Array<{ label: string; sessionId?: string; tabLabel?: string }>;
 }
@@ -49,11 +50,7 @@ export interface Snapshot {
   sound: boolean;
   toast: boolean;
   usage?: { meters: MeterRow[]; spend?: string; error?: string };
-  next?: { label: string; text: string };
-  blockedLanes: LaneRow[];
-  waiting: Row[];
-  ready: Row[];
-  tabs: Row[];
+  rows: Row[];
   lanes: LaneRow[];
 }
 
@@ -68,6 +65,8 @@ export type BoardMessage =
   | { type: 'toggleToast' }
   | { type: 'next' }
   | { type: 'balance' }
+  | { type: 'receive'; n: number }
+  | { type: 'goToReturn'; returnTo: string; n: number }
   | { type: 'ready' };
 
 // One HTML board, shown in the sidebar and, popped out, as an editor that can float on a sidecar.
@@ -122,17 +121,15 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
 
 const CSS = `
 body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
-.k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
-.nextcard { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--vscode-focusBorder); cursor: pointer; margin: 2px 0 4px; }
-.nextcard:hover { background: var(--vscode-list-hoverBackground); }
-.nextcard .label { font-weight: 600; margin: 2px 0; }
-h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); margin: 14px 0 3px; font-weight: 600; }
-.row { display: flex; gap: 8px; align-items: center; padding: 5px 6px; border-radius: 5px; cursor: pointer; }
+.row { display: flex; gap: 7px; align-items: center; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+.quietrow { opacity: .65; }
 .row:hover { background: var(--vscode-list-hoverBackground); }
-.icon { width: 18px; height: 18px; flex: none; display: grid; place-items: center; font-size: 13px; }
+.icon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; font-size: 12px; }
 .body { min-width: 0; flex: 1; }
-.label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.meta { font-size: 11.5px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.label { flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta { flex: none; max-width: 48%; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.body .label { flex: none; }
+.body .meta { max-width: none; display: block; }
 .stale .meta { color: var(--vscode-charts-orange); }
 .old .meta { color: var(--vscode-charts-red); }
 .stale .label, .old .label { font-weight: 600; }
@@ -165,6 +162,8 @@ h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color:
 .dh .meta { flex: 1; }
 .cw { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #b79d70; color: #b79d70; cursor: pointer; white-space: nowrap; }
 .cw:hover { background: rgba(183,157,112,.18); }
+.cw.primary { background: #b79d70; color: #1b1b1b; font-weight: 700; }
+.cw.primary:hover { background: #c9b184; }
 body.panel .footer { background: var(--vscode-editor-background); }
 .rings { width: 42px; height: 42px; flex: none; }
 .rings circle { fill: none; stroke-width: 3; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
@@ -190,7 +189,7 @@ body.panel .footer { background: var(--vscode-editor-background); }
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
 const state = vscode.getState() || { openLane: null };
-let current = { blockedLanes: [], waiting: [], ready: [], tabs: [], lanes: [] };
+let current = { rows: [], lanes: [] };
 let shownLane = null;
 const root = document.getElementById('root');
 const LANE = ['1\\uFE0F\\u20E3', '2\\uFE0F\\u20E3', '3\\uFE0F\\u20E3', '4\\uFE0F\\u20E3', '5\\uFE0F\\u20E3'];
@@ -212,34 +211,17 @@ function rowIcon(r) {
   return el('span', 'hollow');
 }
 function row(r) {
-  const d = el('div', 'row ' + (r.age ? r.age.tier : 'fresh'));
+  const quiet = r.state === 'idle' || (r.state === 'ready' && r.seen);
+  const d = el('div', 'row ' + (r.age ? r.age.tier : 'fresh') + (quiet ? ' quietrow' : ''));
   const icon = el('span', 'icon'); icon.appendChild(rowIcon(r)); d.appendChild(icon);
-  const body = el('div', 'body');
-  body.appendChild(el('div', 'label', r.label));
+  d.appendChild(el('span', 'label', r.label));
   const lanes = r.lanes.map(laneMark).join('');
   const emoji = r.emoji && r.state !== 'ready' ? r.emoji + ' ' : '';
-  body.appendChild(el('div', 'meta', (lanes ? lanes + ' ' : '') + emoji + r.text + (r.hasTab ? '' : ' \\u00b7 no tab here')));
-  d.appendChild(body);
+  const meta = r.state === 'idle' ? '' : (lanes ? lanes + ' ' : '') + emoji + r.text + (r.hasTab ? '' : ' \\u00b7 no tab here');
+  if (meta) d.appendChild(el('span', 'meta', meta));
   d.title = r.label + '\\n' + r.text;
   d.onclick = function () { send(r.sessionId ? { type: 'goToSession', id: r.sessionId } : { type: 'goToTab', label: r.tabLabel || r.label }); };
   return d;
-}
-function blockedRow(l) {
-  const d = el('div', 'row old');
-  const icon = el('span', 'icon'); icon.appendChild(el('span', 'y', '\\u26A0')); d.appendChild(icon);
-  const body = el('div', 'body');
-  body.appendChild(el('div', 'label', laneMark(l.n) + ' Relay lane ' + l.n + ' is BLOCKED'));
-  body.appendChild(el('div', 'meta', l.text));
-  d.appendChild(body);
-  d.onclick = function () { send({ type: 'openLaneFile', n: l.n }); };
-  return d;
-}
-function section(title, nodes, emptyText) {
-  const frag = document.createDocumentFragment();
-  frag.appendChild(el('h2', null, title + ' (' + nodes.length + ')'));
-  if (!nodes.length) frag.appendChild(el('div', 'empty', emptyText));
-  nodes.forEach(function (n) { frag.appendChild(n); });
-  return frag;
 }
 function taskGlyph(t) {
   if (t.role === 'queued') return ['dim', '\\u25D4'];
@@ -323,6 +305,12 @@ function drawer(s) {
   const head = el('div', 'dh');
   head.appendChild(el('b', null, 'Lane ' + l.n));
   head.appendChild(el('span', 'meta ' + (l.age ? l.age.tier : ''), l.text));
+  if (l.landed) {
+    const rc = el('span', 'cw primary', 'Receive \\u2913');
+    rc.title = 'Hand this result to the tab that sent it (types "check relay ' + l.n + '" there)';
+    rc.onclick = function () { send({ type: 'receive', n: l.n }); };
+    head.appendChild(rc);
+  }
   const cw = el('span', 'cw', 'Cowork \\u2197');
   cw.title = 'Open this lane in Cowork';
   cw.onclick = function () { send({ type: 'openCowork', n: l.n }); };
@@ -331,7 +319,7 @@ function drawer(s) {
   l.tasks.forEach(function (task) {
     const g = taskGlyph(task);
     const prefix = task.role === 'result' ? 'Result' : task.role === 'current' ? 'Now' : 'Queued #' + task.position;
-    inner.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'openLaneFile', n: l.n, file: task.file }); }));
+    inner.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n }); }));
   });
   l.tabs.forEach(function (tab) {
     inner.appendChild(child(numIcon(l.n), 'Tab: \\u00ab' + tab.label + '\\u00bb', 'waiting on this lane', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));
@@ -363,6 +351,7 @@ const SHORTCUTS = [
   ['\\u2303Tab', 'VS Code tab switcher (works with the tab bar hidden)'],
   ['1 2 3', 'Click a lane number to slide its queue up'],
   ['\\u21C4', 'Even out the lanes (moves queued tasks, never the one in flight)'],
+  ['Receive \\u2913', 'Hand a landed result to the tab that sent it'],
   ['Cowork \\u2197', 'Open that lane in Cowork'],
   ['\\u2197', 'Pop the board out into its own window']
 ];
@@ -406,7 +395,7 @@ function footer(s) {
   legend.setAttribute('data-tip', usageTip);
   strip.appendChild(legend);
   const tools = el('div', 'tools');
-  tools.appendChild(iconButton(s.quiet ? BELL_OFF : BELL, s.quiet ? 'Muted \u00b7 ' + s.quiet.held + ' held \u00b7 click to unmute (\u21E7\u2325\u2318J)' : 'Mute everything: hold all pings until you unmute. Money, failed and BLOCKED still break through. \u21E7\u2325\u2318J', !!s.quiet, function () { send({ type: 'toggleQuiet' }); }));
+  tools.appendChild(iconButton(s.quiet ? BELL_OFF : BELL, s.quiet ? 'Muted \u00b7 ' + s.quiet.held + ' held \u00b7 click to unmute (\u21E7\u2325\u2318J)' : 'Notifications on \u00b7 click to mute everything until you unmute. Money, failed and BLOCKED still break through. \u21E7\u2325\u2318J', !s.quiet, function () { send({ type: 'toggleQuiet' }); }));
   tools.appendChild(iconButton(s.sound ? SPEAKER : SPEAKER_OFF, s.sound ? 'Sound is on \u00b7 click to turn the ping sounds off' : 'Sound is off \u00b7 click to turn the ping sounds on', !!s.sound, function () { send({ type: 'toggleSound' }); }));
   tools.appendChild(iconButton(s.toast ? BREAD : BREAD_OFF, s.toast ? 'Toast is on \u00b7 click to turn off the pop-up notifications (in-window toast + macOS banner)' : 'Toast is off \u00b7 click to turn the pop-up notifications on', !!s.toast, function () { send({ type: 'toggleToast' }); }));
   tools.appendChild(iconButton(KEYS, 'Keyboard shortcuts and what each icon does', !!state.showKeys, function () {
@@ -433,17 +422,8 @@ function footer(s) {
 function render(s) {
   current = s;
   const frag = document.createDocumentFragment();
-  if (s.next) {
-    const n = el('div', 'nextcard');
-    n.appendChild(el('div', 'k', 'Next \\u00b7 \\u2303\\u2318U'));
-    n.appendChild(el('div', 'label', s.next.label));
-    n.appendChild(el('div', 'meta', s.next.text));
-    n.onclick = function () { send({ type: 'next' }); };
-    frag.appendChild(n);
-  }
-  frag.appendChild(section('Waiting on you', s.blockedLanes.map(blockedRow).concat(s.waiting.map(row)), 'nothing needs you'));
-  frag.appendChild(section('Ready', s.ready.map(row), 'nothing new'));
-  frag.appendChild(section('Tabs', s.tabs.map(row), 'no Claude tabs open here'));
+  if (!s.rows.length) frag.appendChild(el('div', 'empty', 'no Claude tabs open here'));
+  s.rows.forEach(function (r) { frag.appendChild(row(r)); });
   frag.appendChild(footer(s));
   root.replaceChildren(frag);
 }

@@ -750,9 +750,14 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
+  // Always re-draw, even mid-dance: a tab Alex closes must leave the board that instant.
   private tabsChanged(e?: vscode.TabChangeEvent): void {
-    for (const tab of e?.closed ?? []) this.tabClosed(tab);
+    const closed = (e?.closed ?? []).filter(tabs.isClaudeTab);
+    const opened = (e?.opened ?? []).filter(tabs.isClaudeTab);
+    if (closed.length || opened.length) this.log.info(`tabs: ${closed.map((t) => `closed "${t.label}"`).concat(opened.map((t) => `opened "${t.label}"`)).join(', ')}`);
+    for (const tab of closed) this.tabClosed(tab);
     for (const tab of e?.changed ?? []) this.tabRelabeled(tab);
+    this.render();
     if (this.dancing) return;
     clearTimeout(this.seenTimer);
     const active = tabs.activeClaudeTab();
@@ -760,7 +765,6 @@ class TabQueue implements vscode.Disposable {
       this.pinNextPending(active.label);
       this.seenTimer = setTimeout(() => this.viewed(active), 1500);
     }
-    this.render();
   }
 
   private tabRelabeled(tab: vscode.Tab): void {

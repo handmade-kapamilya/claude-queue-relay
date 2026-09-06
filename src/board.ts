@@ -432,9 +432,10 @@ function drawer(s) {
     const g = taskGlyph(task);
     const startable = task.role === 'queued' || (task.role === 'current' && task.status === 'READY');
     const icon = startable ? playButton(l, task) : el('span', g[0], g[1]);
-    const meta = task.role === 'result' ? task.status.toLowerCase() : task.role === 'current' ? (task.status === 'RUNNING' ? 'running' : 'ready for Cowork') : 'queued #' + task.position;
-    const tip = task.label + ' \\u00b7 ' + task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : '');
-    const r = child(icon, task.label, meta, function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n, taskId: task.taskId }); }, tip);
+    // Title only: the glyph shows the state and the tooltip spells it out, so the name has the whole row.
+    const state = task.role === 'result' ? task.status.toLowerCase() : task.role === 'current' ? (task.status === 'RUNNING' ? 'running' : 'ready for Cowork') : 'queued #' + task.position;
+    const tip = task.label + ' \\u00b7 ' + state + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : '');
+    const r = child(icon, task.label, '', function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n, taskId: task.taskId }); }, tip);
     r.appendChild(dismissButton(l, task));
     inner.appendChild(r);
   });

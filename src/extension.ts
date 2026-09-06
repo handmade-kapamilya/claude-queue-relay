@@ -10,7 +10,7 @@ import { readSessionTitle, readTitles } from './titles';
 import * as tabs from './tabs';
 import { SoundKind, claim, cleanupClaims, macNotify, playSound } from './notify';
 import { Age, Board, BoardMessage, LaneRow, ProblemRow, Row, Snapshot } from './board';
-import { Lane, LaneStage, LaneTask, RelayWatcher, fileAgeMs, laneIsResult, laneLook, laneTaskLabel, taskNameIn } from './relay';
+import { Lane, LaneStage, LaneTask, RelayWatcher, fileAgeMs, laneIsResult, laneLook, laneTaskLabel, taskNameIn, wedgedInbox } from './relay';
 import { coworkSessionFor, openCowork } from './cowork';
 import { fuzzyPickKey } from './fuzzy';
 import { headline } from './footer';
@@ -115,6 +115,15 @@ interface Brief {
   state: string;
   detail?: string;
   next: string;
+  actions: BriefAction[];
+}
+
+// The next move, as a button in the read-out; `kind` is what the board sends back.
+type BriefKind = 'clear' | 'receive' | 'start' | 'retry' | 'cowork' | 'attach' | 'open';
+interface BriefAction {
+  label: string;
+  kind: BriefKind;
+  primary?: boolean;
 }
 
 interface Problem {
@@ -904,6 +913,8 @@ class TabQueue implements vscode.Disposable {
         return void this.play(m.n, m.file);
       case 'dismiss':
         return void this.dismiss(m.n, m.file);
+      case 'brief':
+        return void this.briefAction(m.n, m.kind);
       case 'fix':
         return void this.fix(m.lane, m.code, m.fix);
       case 'snooze':
@@ -1305,6 +1316,23 @@ class TabQueue implements vscode.Disposable {
           });
         }
       }
+      const wedged = wedgedInbox(lane);
+      if (wedged) {
+        out.push({
+          lane: lane.n,
+          code: 'wedged',
+          text: `«${wedged.name}» sits in the inbox as ${wedged.status}; drain skips it, so the lane stays busy forever`,
+          fixes: [{ label: 'Clear it', run: () => this.clearLane(lane.n) }, { label: 'Send it again', run: () => this.retry(lane.n) }],
+        });
+      }
+      if (result && laneIsResult(lane) && lane.seen && fileAgeMs(lane.outbound.path) > 30 * 60_000) {
+        out.push({
+          lane: lane.n,
+          code: 'lingering',
+          text: `«${laneTaskLabel(result)}» was taken ${hoursText(fileAgeMs(lane.outbound.path))} ago but was never cleared, so it still holds the lane`,
+          fixes: [{ label: 'Clear it', run: () => this.clearLane(lane.n) }, { label: 'Open Cowork', run: () => this.openCowork(lane.n) }],
+        });
+      }
       if ((lane.stage === 'ready' || lane.stage === 'running') && !this.coworkFor(lane.n)) {
         out.push({ lane: lane.n, code: 'no-cowork', text: `no Cowork session named HK-RELAY-${lane.n} is open, so nothing will run this lane`, fixes: [{ label: 'Open Claude', run: () => this.openCowork(lane.n) }] });
       }
@@ -1320,7 +1348,8 @@ class TabQueue implements vscode.Disposable {
     return out;
   }
 
-  // Where this lane stands and what the next move is, in the words Alex would use.
+  // Where this lane stands and what the next move is, in the words Alex would use,
+  // with the buttons that do it. Every state ends in something Alex can press.
   private laneBrief(lane: Lane): Brief {
     const name = (t?: LaneTask) => (t ? laneTaskLabel(t) : 'the task');
     const behind = lane.queue.length ? ` ${lane.queue.length} more queued behind it.` : '';
@@ -1328,48 +1357,74 @@ class TabQueue implements vscode.Disposable {
       const t = age(at, 'lane').text;
       return t === 'just now' ? 'just now' : `${t} ago`;
     };
+    const cowork: BriefAction = { label: 'Open Cowork ↗', kind: 'cowork' };
+    const clear: BriefAction = { label: 'Clear it', kind: 'clear' };
     if (laneIsResult(lane) && lane.result) {
       const tab = this.tabFor(lane.result, lane.n);
       const word = LANDING_WORDS[lane.stage] ?? lane.stage;
-      const nextTask = lane.queue.length ? ' Then ▶ starts the next one.' : '';
+      const stuckOn = lane.stage === 'blocked' || lane.stage === 'abandoned';
+      const detail = this.resultDetail(lane);
+      // Seen only means Alex looked. The files still hold the lane until the job is cleared.
+      if (lane.seen) {
+        return {
+          state: `${name(lane.result)} ${word}`,
+          detail,
+          next: `You already took this one, but the job still holds lane ${lane.n}. Clear it to file the result in the archive and free the lane${lane.queue.length ? ', then ▶ starts the next task' : ''}.`,
+          actions: [{ ...clear, primary: true }, ...(stuckOn ? [{ label: 'Send it again', kind: 'retry' as const }] : []), cowork],
+        };
+      }
       return {
         state: `${name(lane.result)} ${word}`,
-        detail: this.resultDetail(lane),
-        next: lane.seen
-          ? `You already took this one.${lane.queue.length ? ' Press ▶ to start the next task.' : ' The lane is free for a new task.'}`
-          : tab
-            ? `Press ⤓ to hand it to «${tab.label}»; it types "check relay ${lane.n}" there.${nextTask}`
-            : `No tab here is waiting for it. Attach one in the check-up, or open the result file.`,
+        detail,
+        next: tab
+          ? `Press Receive to hand it to «${tab.label}»; it types "check relay ${lane.n}" there. Clear it when you are done with it.`
+          : 'No tab here is waiting for this. Attach one, or read the result and clear the job.',
+        actions: tab
+          ? [{ label: 'Receive ⤓', kind: 'receive', primary: true }, clear, ...(stuckOn ? [cowork] : [])]
+          : [{ label: 'Attach to tab…', kind: 'attach', primary: true }, { label: 'Open result', kind: 'open' }, clear],
+      };
+    }
+    const wedged = wedgedInbox(lane);
+    if (wedged) {
+      return {
+        state: `${wedged.name} is stuck in lane ${lane.n}'s inbox`,
+        detail: `Its status reads ${wedged.status}, so drain.sh skips it and Cowork will never pick it up. It will sit here until you clear it.`,
+        next: 'Clear it to archive the job and free the lane, or send it again to put it back in front of Cowork.',
+        actions: [{ ...clear, primary: true }, { label: 'Send it again', kind: 'retry' }, cowork],
       };
     }
     if (lane.stage === 'running') {
       const quiet = Date.now() - Math.max(lane.inbound.mtime, lane.outbound.mtime);
+      const stuck = quiet > STUCK_MS;
       return {
         state: `${name(lane.current)} is in flight`,
         detail: `Cowork started it ${since(lane.inbound.mtime)}.${behind}`,
-        next:
-          quiet > STUCK_MS
-            ? `Nothing from Cowork for ${hoursText(quiet)}. Re-kick it from the check-up, or open Cowork ↗ and say "run ./relay/drain.sh".`
-            : 'Nothing to do. It pings you here the moment it lands.',
+        next: stuck
+          ? `Nothing from Cowork for ${hoursText(quiet)}. Send it again, or open Cowork and say "run ./relay/drain.sh".`
+          : 'Nothing to do. It pings you here the moment it lands.',
+        actions: stuck ? [{ label: 'Send it again', kind: 'retry', primary: true }, cowork, clear] : [cowork],
       };
     }
     if (lane.stage === 'ready') {
+      const live = !!this.coworkFor(lane.n);
       return {
         state: `${name(lane.current)} is written but not started`,
         detail: `Waiting since ${since(lane.inbound.mtime)}.${behind}`,
-        next: this.coworkFor(lane.n)
-          ? 'Press ▶ to start it, or open Cowork ↗ and say "run ./relay/drain.sh".'
+        next: live
+          ? 'Press Start and Cowork runs it, or open Cowork and say "run ./relay/drain.sh".'
           : `No Cowork session named HK-RELAY-${lane.n} is open, so nothing will run it. Open Claude first.`,
+        actions: live ? [{ label: 'Start ▶', kind: 'start', primary: true }, cowork, clear] : [{ label: 'Open Claude ↗', kind: 'cowork', primary: true }, clear],
       };
     }
     if (lane.stage === 'queued') {
       return {
         state: `${lane.queue.length} task${lane.queue.length === 1 ? '' : 's'} waiting, nothing in flight`,
         detail: `Oldest first: ${name(lane.queue[0])}.`,
-        next: 'Press ▶ on the one you want and Cowork picks it up.',
+        next: 'Press Start and Cowork picks up the oldest one, or ▶ the one you want.',
+        actions: [{ label: 'Start ▶', kind: 'start', primary: true }, cowork],
       };
     }
-    return { state: 'This lane is empty', next: 'Send a task from any tab and it shows up here.' };
+    return { state: 'This lane is empty', next: 'Send a task from any tab and it shows up here.', actions: [cowork] };
   }
 
   // The one line the result actually says: its HEADLINE, else whatever trails the STATUS word.
@@ -1394,6 +1449,66 @@ class TabQueue implements vscode.Disposable {
     return Promise.resolve(fix.run()).then(() => this.render());
   }
 
+  // The buttons in a lane's read-out; one message, routed to what already exists.
+  async briefAction(n: number, kind: BriefKind): Promise<void> {
+    const lane = this.lane(n);
+    if (!lane) return;
+    this.log.info(`lane ${n} read-out: ${kind}`);
+    const first = lane.current ?? lane.queue[0];
+    switch (kind) {
+      case 'clear':
+        return this.clearLane(n);
+      case 'receive':
+        return this.receive(n);
+      case 'start':
+        return first ? this.play(n, first.file) : undefined;
+      case 'retry':
+        return this.retry(n);
+      case 'cowork':
+        return this.openCowork(n);
+      case 'attach':
+        return lane.result ? this.attach(n, lane.result.file) : undefined;
+      case 'open':
+        return this.openLaneFile(n);
+    }
+  }
+
+  // Clear the job this lane is sitting on, whichever file it lives in.
+  async clearLane(n: number): Promise<void> {
+    const lane = this.lane(n);
+    if (!lane) return;
+    const job = lane.result ?? lane.current;
+    const taskId = job?.taskId ?? wedgedInbox(lane)?.taskId ?? lane.inbound.fields.TASK_ID;
+    if (!taskId || taskId === 'none') return void vscode.window.setStatusBarMessage(`Lane ${n} has nothing to clear`, 2500);
+    const label = job ? laneTaskLabel(job) : (wedgedInbox(lane)?.name ?? taskId);
+    this.forgetSender(taskId, n);
+    const archived = this.relay.clearJob(lane, taskId);
+    this.log.info(`cleared lane ${n} job "${label}" (${taskId}); archived ${archived.length} file(s)`);
+    vscode.window.setStatusBarMessage(`Cleared «${label}» · ${archived.length} file(s) archived in lane ${n}`, 5000);
+    this.scheduleSync(500);
+    this.render();
+  }
+
+  // Put a task back in front of Cowork: flip the inbox copy to READY and kick the lane.
+  async retry(n: number): Promise<void> {
+    const lane = this.lane(n);
+    if (!lane) return;
+    const inbox = lane.inbound;
+    if (!inbox.exists || !inbox.fields.TASK_ID || inbox.fields.TASK_ID === 'none') return void vscode.window.showWarningMessage(`Lane ${n}'s inbox is empty; there is nothing to send again.`);
+    this.relay.setStatus(lane, inbox.path, 'READY');
+    this.log.info(`lane ${n}: sent "${inbox.fields.TASK_NAME ?? inbox.fields.TASK_ID}" again as READY`);
+    await this.kickCowork(n);
+    this.render();
+  }
+
+  private forgetSender(taskId: string, n: number): void {
+    const all = readSenders();
+    if (!all[taskId]) return;
+    delete all[taskId];
+    writeSenders(all);
+    for (const s of this.sessions()) s.lanes = s.lanes.filter((l) => l !== n);
+  }
+
   // Clear a task: it goes to the lane's archive as CANCELLED (a result: CONSUMED) and its slot empties.
   async dismiss(n: number, file: string): Promise<void> {
     const lane = this.lane(n);
@@ -1408,9 +1523,9 @@ class TabQueue implements vscode.Disposable {
       delete all[task.taskId];
       writeSenders(all);
     }
-    const dest = this.relay.dismiss(lane, task);
-    this.log.info(`dismissed lane ${n} ${task.role} "${name}" → ${dest}`);
-    vscode.window.setStatusBarMessage(`Archived «${name}» to lane ${n}'s archive`, 4000);
+    const archived = this.relay.dismiss(lane, task);
+    this.log.info(`dismissed lane ${n} ${task.role} "${name}" → ${archived.join(', ')}`);
+    vscode.window.setStatusBarMessage(`Cleared «${name}» · ${archived.length} file(s) archived in lane ${n}`, 5000);
     this.scheduleSync(500);
     this.render();
   }
@@ -1774,6 +1889,7 @@ export function activate(context: vscode.ExtensionContext): void {
     command('snooze', (id: string) => queue.snooze(id)),
     command('doctor', () => queue.showDoctor()),
     command('dismissLaneTask', (n: number, file: string) => queue.dismiss(n, file)),
+    command('clearLane', (n: number) => queue.clearLane(n)),
     command('toggleQuiet', () => queue.toggleQuiet()),
     command('toggleSound', () => queue.toggleSound()),
     command('toggleToast', () => queue.toggleToast()),

@@ -34,10 +34,16 @@ out into its own window, that answers "what needs me?" at a glance.
   closes the ones you confirm; `⌘⇧T` reopens.
 - **Snooze.** Hover a finished or waiting row and click 💤: 30 minutes, 2 hours, or until a lane
   lands. The row drops to the bottom and pings again when it's time. Survives a reload.
+- **Every lane read-out ends in a button.** Under a lane's tasks: the state in bold gold, what
+  the result said, then NEXT and the buttons that do it. **Clear it** files the whole job in
+  `relay/archive/` (inbox copy, result, any queue duplicate and the unconsumed receipt, all
+  keyed by TASK_ID) and empties the lane. **Send it again** flips the inbox copy back to READY
+  and kicks Cowork. Nothing needs a hover to be found.
 - **Lane check-up.** The pulse icon next to ⇄ shows a red count when a lane has something that
   won't fix itself: a task whose tab is gone (orphan), one waiting more than 7 days (stale), a
-  RUNNING task with no output for 2 hours (stuck), a BLOCKED result, a READY lane with no
-  Cowork session, or VS Code missing Accessibility. Each comes with its buttons: Dismiss
+  RUNNING task with no output for 2 hours (stuck), a BLOCKED result, a task **wedged** in the
+  inbox with a status drain.sh skips, a result **lingering** half an hour after you took it, a
+  READY lane with no Cowork session, or VS Code missing Accessibility. Each comes with its buttons: Dismiss
   (archives it as CANCELLED / CONSUMED and empties the slot), Attach to tab…, Start, Re-kick
   Cowork, Reset to READY, Open Cowork, Receive. Hover any task in a lane drawer for ✕ = Dismiss.
 - **Age colors.** Waiting rows turn amber after 20 minutes and red after 60; a running tab

@@ -306,26 +306,46 @@ export class RelayWatcher implements vscode.Disposable {
 
   // Clearing a task means archiving it: the file lands in relay/archive as CANCELLED (results:
   // CONSUMED), its slot is emptied, and any unconsumed receipt copy in outbox/ goes with it.
-  dismiss(lane: Lane, task: LaneTask): string {
+  // Clearing a job means clearing the whole job. A result alone isn't it: the same TASK_ID
+  // usually also sits in the lane's inbox and in the unconsumed-receipt outbox, and a lane
+  // whose inbox still holds a dead task is occupied even though nothing will ever run it.
+  // Every copy goes to relay/archive stamped CANCELLED (results CONSUMED) and its slot empties.
+  clearJob(lane: Lane, taskId: string): string[] {
     const relay = path.join(lane.dir, 'relay');
     const archive = path.join(relay, 'archive');
     fs.mkdirSync(archive, { recursive: true });
-    const id = task.taskId ?? path.basename(task.file, '.md');
-    const status = task.role === 'result' ? 'CONSUMED' : 'CANCELLED';
-    const stamp = `DISMISSED: ${new Date().toISOString()} by Claude Tab Queue`;
-    const text = readText(task.file);
-    const stamped = /^STATUS:.*$/m.test(text) ? text.replace(/^STATUS:.*$/m, `STATUS:    ${status}\n${stamp}`) : `${text}\nSTATUS:    ${status}\n${stamp}\n`;
-    const dest = freeName(path.join(archive, `${id}.${task.role === 'result' ? 'outbound' : 'inbound'}.md`));
-    fs.writeFileSync(dest, stamped);
-    if (task.role === 'queued') fs.unlinkSync(task.file);
-    else fs.writeFileSync(task.file, EMPTY_SLOT[task.role === 'result' ? 'outbound' : 'inbound']);
-    if (task.role === 'result') {
-      try { fs.unlinkSync(path.join(relay, 'outbox', `${id}.md`)); } catch { /* no receipt copy */ }
-      if (lane.inbound.fields.TASK_ID === task.taskId) fs.writeFileSync(lane.inbound.path, EMPTY_SLOT.inbound);
+    const archived: string[] = [];
+    for (const kind of ['inbound', 'outbound'] as const) {
+      const file = path.join(relay, `${kind}.md`);
+      if (readLaneFile(file).fields.TASK_ID !== taskId) continue;
+      archived.push(archiveCopy(file, archive, taskId, kind, kind === 'outbound' ? 'CONSUMED' : 'CANCELLED'));
+      fs.writeFileSync(file, EMPTY_SLOT[kind]);
+    }
+    for (const task of readQueue(relay)) {
+      if (task.taskId !== taskId) continue;
+      archived.push(archiveCopy(task.file, archive, taskId, 'queued', 'CANCELLED'));
+      fs.unlinkSync(task.file);
+    }
+    try {
+      fs.unlinkSync(path.join(relay, 'outbox', `${taskId}.md`));
+    } catch {
+      // no unconsumed receipt copy
     }
     this.refresh(lane);
-    return dest;
+    return archived;
   }
+
+  dismiss(lane: Lane, task: LaneTask): string[] {
+    if (task.taskId) return this.clearJob(lane, task.taskId);
+    const archive = path.join(lane.dir, 'relay', 'archive');
+    fs.mkdirSync(archive, { recursive: true });
+    const dest = archiveCopy(task.file, archive, path.basename(task.file, '.md'), 'queued', 'CANCELLED');
+    if (task.role === 'queued') fs.unlinkSync(task.file);
+    else fs.writeFileSync(task.file, EMPTY_SLOT[task.role === 'result' ? 'outbound' : 'inbound']);
+    this.refresh(lane);
+    return [dest];
+  }
+
 
   setStatus(lane: Lane, file: string, status: string): void {
     const text = readText(file);
@@ -386,10 +406,31 @@ function readText(file: string): string {
   }
 }
 
+// One copy of a task file, stamped with how it ended, filed under its id.
+function archiveCopy(file: string, archive: string, id: string, kind: string, status: string): string {
+  const text = readText(file);
+  const stamp = `DISMISSED: ${new Date().toISOString()} by Claude Tab Queue`;
+  const stamped = /^STATUS:.*$/m.test(text) ? text.replace(/^STATUS:.*$/m, `STATUS:    ${status}\n${stamp}`) : `${text}\nSTATUS:    ${status}\n${stamp}\n`;
+  const dest = freeName(path.join(archive, `${id}.${kind}.md`));
+  fs.writeFileSync(dest, stamped);
+  return dest;
+}
+
 function freeName(p: string): string {
   if (!fs.existsSync(p)) return p;
   const dismissed = p.replace(/\.md$/, '-dismissed.md');
   return fs.existsSync(dismissed) ? p.replace(/\.md$/, `-dismissed-${Date.now()}.md`) : dismissed;
+}
+
+// The inbox still names a task, but its status is neither READY nor RUNNING, so drain.sh
+// skips it forever: the lane looks busy and nothing will ever move it.
+export function wedgedInbox(lane: Lane): { taskId: string; name: string; status: string } | undefined {
+  const f = lane.inbound;
+  const taskId = f.fields.TASK_ID;
+  const status = statusWord(f);
+  if (!f.exists || !taskId || taskId === 'none' || status === 'READY' || status === 'RUNNING' || status === 'EMPTY') return undefined;
+  if (lane.result?.taskId === taskId) return undefined;
+  return { taskId, name: f.fields.TASK_NAME ?? taskId, status };
 }
 
 export function fileAgeMs(file: string): number {

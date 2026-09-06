@@ -41,7 +41,7 @@ export interface LaneRow {
   canStart: boolean;
   startBlocked?: string;
   problems: number;
-  brief: { state: string; detail?: string; next: string };
+  brief: { state: string; detail?: string; next: string; actions: Array<{ label: string; kind: string; primary?: boolean }> };
   tasks: TaskRow[];
 }
 
@@ -84,6 +84,7 @@ export type BoardMessage =
   | { type: 'play'; n: number; file: string }
   | { type: 'dismiss'; n: number; file: string }
   | { type: 'fix'; lane: number; code: string; fix: string }
+  | { type: 'brief'; n: number; kind: 'clear' | 'receive' | 'start' | 'retry' | 'cowork' | 'attach' | 'open' }
   | { type: 'snooze'; id: string }
   | { type: 'unsnooze'; id: string }
   | { type: 'goToReturn'; returnTo: string; n: number; taskId?: string }
@@ -201,6 +202,7 @@ body.panel .drawer.open { background: var(--vscode-editor-background); }
 .brief .bd { margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--vscode-descriptionForeground); }
 .brief .bn { margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: var(--vscode-foreground); }
 .brief .bn i { font-style: normal; font-weight: 700; color: #b79d70; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; margin-right: 5px; }
+.brief .ba { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
 .drawer .inner { padding: 8px 6px 8px 8px; }
 .dh { display: flex; align-items: center; gap: 8px; margin: 0 0 6px 4px; }
 .dh b { background: #b79d70; color: #1b1b1b; padding: 1px 9px; border-radius: 999px; font-weight: 700; }
@@ -417,7 +419,8 @@ function reveal(d, key) {
   else requestAnimationFrame(function () { requestAnimationFrame(function () { d.classList.add('open'); }); });
   shownLane = key;
 }
-function briefBlock(b) {
+function briefBlock(l) {
+  const b = l.brief;
   const box = el('div', 'brief');
   box.appendChild(el('div', 'bs', b.state));
   if (b.detail) box.appendChild(el('div', 'bd', b.detail));
@@ -425,6 +428,17 @@ function briefBlock(b) {
   next.appendChild(el('i', null, 'Next'));
   next.appendChild(document.createTextNode(b.next));
   box.appendChild(next);
+  const acts = b.actions || [];
+  if (acts.length) {
+    const row = el('div', 'ba');
+    acts.forEach(function (a) {
+      const btn = el('span', 'cw' + (a.primary ? ' primary' : ''), a.label);
+      btn.title = a.kind === 'clear' ? 'File this job in the lane archive and empty the lane' : a.label;
+      btn.onclick = function () { send({ type: 'brief', n: l.n, kind: a.kind }); };
+      row.appendChild(btn);
+    });
+    box.appendChild(row);
+  }
   return box;
 }
 function drawer(s) {
@@ -460,7 +474,7 @@ function drawer(s) {
     r.appendChild(dismissButton(l, task));
     inner.appendChild(r);
   });
-  inner.appendChild(briefBlock(l.brief));
+  inner.appendChild(briefBlock(l));
   d.appendChild(inner);
   return d;
 }
@@ -496,7 +510,8 @@ const SHORTCUTS = [
   ['\\u21C4', 'Even out the lanes (moves queued tasks, never the one in flight)'],
   ['\\u2661', 'Check-up: orphaned, stale, stuck or blocked tasks, each with a fix'],
   ['\\u2715', 'Hover a tab row: the gold \\u2715 closes that tab (\\u2318\\u21E7T reopens)'],
-  ['\\u2715', 'Hover a task in a lane: clear it into the archive'],
+  ['Clear it', 'In a lane read-out: file the whole job in the archive and free the lane'],
+  ['\\u2715', 'Hover a task in a lane: clear that one task into the archive'],
   ['Receive \\u2913', 'Hand a landed result to the tab that sent it'],
   ['\\u25B6', 'Start a queued task now (grayed until the last result is Received)'],
   ['Cowork \\u2197', 'Open that lane in Cowork'],

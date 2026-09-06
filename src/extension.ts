@@ -218,7 +218,9 @@ function writeSenders(all: Record<string, Sender>): void {
 
 // Cowork copies RETURN-TO from the task into its result, so writing the real tab title here
 // makes the result find its way home no matter what name the sending Claude guessed.
-function stampReturnTo(file: string, title: string): string | undefined {
+// SESSION: pins the sending session's id into the file too, so the tie survives a renamed tab
+// and a lost lanes.json.
+function stampReturnTo(file: string, title: string, sessionId?: string): string | undefined {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -226,10 +228,18 @@ function stampReturnTo(file: string, title: string): string | undefined {
     return undefined;
   }
   const taskId = /^TASK_ID:\s*(\S+)/m.exec(text)?.[1];
-  const line = `RETURN-TO: «${title}»`;
-  const next = /^RETURN-TO:.*$/m.test(text) ? text.replace(/^RETURN-TO:.*$/m, line) : text.replace(/^(TASK_ID:.*)$/m, `$1\n${line}`);
+  let next = setField(text, 'RETURN-TO', `«${title}»`, 'TASK_ID');
+  if (sessionId) next = setField(next, 'SESSION', sessionId, 'RETURN-TO');
   if (next !== text) fs.writeFileSync(file, next);
   return taskId;
+}
+
+// Replace "KEY: …" in a handover, or add it right after the line that starts with `after`.
+function setField(text: string, key: string, value: string, after: string): string {
+  const line = `${key}:${' '.repeat(Math.max(1, 11 - key.length))}${value}`;
+  const own = new RegExp(`^${key}:.*$`, 'm');
+  if (own.test(text)) return text.replace(own, line);
+  return text.replace(new RegExp(`^(${after}:.*)$`, 'm'), `$1\n${line}`);
 }
 
 // The task file a lane's send script just wrote: inbound.md or the newest queue entry.
@@ -417,7 +427,7 @@ class TabQueue implements vscode.Disposable {
   }
 
   private recordSender(file: string, title: string, session: Session, n: number): void {
-    const taskId = stampReturnTo(file, title);
+    const taskId = stampReturnTo(file, title, session.id);
     if (!taskId) return;
     const all = readSenders();
     all[taskId] = { sessionId: session.id, title, n, at: Date.now() };
@@ -488,8 +498,19 @@ class TabQueue implements vscode.Disposable {
     session.tabLabel = active.label;
   }
 
+  // Any name a session has gone by: its current title, the AI's title, a rename, or its tab label.
   private sessionTitled(title: string): Session | undefined {
-    return this.sessions().find((s) => s.title === title || (!!s.tabLabel && tabs.labelMatches(s.tabLabel, title)));
+    const names = (s: Session) => [s.title, s.aiTitle, s.customTitle].filter((x): x is string => !!x);
+    return (
+      this.sessions().find((s) => names(s).includes(title)) ??
+      this.sessions().find((s) => names(s).some((x) => tabs.labelMatches(x, title) || tabs.labelMatches(title, x)) || (!!s.tabLabel && tabs.labelMatches(s.tabLabel, title)))
+    );
+  }
+
+  private laneTaskById(n: number | undefined, taskId: string | undefined): LaneTask | undefined {
+    const lane = n ? this.lane(n) : undefined;
+    if (!lane || !taskId) return undefined;
+    return [lane.current, ...lane.queue, lane.result].find((t) => t?.taskId === taskId);
   }
 
   private sessionOnTab(tab: vscode.Tab): Session | undefined {
@@ -1162,16 +1183,21 @@ class TabQueue implements vscode.Disposable {
   }
 
   async goToReturn(returnTo: string, n: number, taskId?: string): Promise<void> {
-    const tab = this.tabFor({ returnTo, taskId }, n);
+    const tab = this.tabFor(this.laneTaskById(n, taskId) ?? { returnTo, taskId }, n);
     if (!tab) return void vscode.window.showWarningMessage(returnTo ? `No open tab here named «${returnTo}» (lane ${n}).` : `Lane ${n}: that task has no RETURN-TO tab.`);
     await this.focus(tab);
   }
 
-  private tabFor(task: { returnTo?: string; taskId?: string } | undefined, n?: number, strict = false): vscode.Tab | undefined {
+  // Who a task belongs to, most reliable signal first: the session id stamped in the file (a result
+  // borrows it from the lane's matching inbound/queue entry), the sender record, the one session
+  // waiting on the lane, the RETURN-TO name, and finally the task's own name (older versions renamed
+  // the sending tab to it).
+  private tabFor(task: { returnTo?: string; taskId?: string; taskName?: string; sessionId?: string } | undefined, n?: number, strict = false): vscode.Tab | undefined {
+    const twin = this.laneTaskById(n, task?.taskId);
     const record = task?.taskId ? readSenders()[task.taskId] : undefined;
-    const recorded = record && this.registry.sessions.get(record.sessionId);
-    if (recorded) {
-      const tab = this.tabOf(recorded);
+    for (const id of [task?.sessionId, twin?.sessionId, record?.sessionId]) {
+      const session = id ? this.registry.sessions.get(id) : undefined;
+      const tab = session && this.tabOf(session);
       if (tab) return tab;
     }
     if (n && !strict) {
@@ -1181,10 +1207,13 @@ class TabQueue implements vscode.Disposable {
         if (tab) return tab;
       }
     }
-    const title = task?.returnTo ?? record?.title;
-    if (!title) return undefined;
-    const session = this.sessionTitled(title);
-    return (session && this.tabOf(session)) ?? tabs.findByLabel(title) ?? this.fuzzyTab(title);
+    for (const name of [task?.returnTo ?? record?.title, task?.taskName ?? twin?.taskName]) {
+      if (!name) continue;
+      const session = this.sessionTitled(name);
+      const tab = (session && this.tabOf(session)) ?? tabs.findByLabel(name) ?? this.fuzzyTab(name);
+      if (tab) return tab;
+    }
+    return undefined;
   }
 
   private fuzzyTab(title: string): vscode.Tab | undefined {

@@ -18,6 +18,7 @@ export interface LaneTask {
   file: string;
   taskId?: string;
   taskName?: string;
+  sessionId?: string;
   status: string;
   returnTo?: string;
   position?: number;
@@ -90,6 +91,7 @@ function toTask(role: TaskRole, f: LaneFile, position?: number): LaneTask {
     file: f.path,
     taskId: f.fields.TASK_ID,
     taskName: f.fields.TASK_NAME,
+    sessionId: f.fields.SESSION,
     status: statusWord(f),
     returnTo: cleanReturnTo(f.fields['RETURN-TO']),
     position,

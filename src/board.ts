@@ -419,14 +419,14 @@ function drawer(s) {
   const inner = el('div', 'inner');
   const head = el('div', 'dh');
   head.appendChild(el('b', null, 'Lane ' + l.n));
-  head.appendChild(el('span', 'meta ' + (l.age ? l.age.tier : ''), l.text));
+  const spacer = el('span', 'meta'); spacer.title = l.text; head.appendChild(spacer);
   if (l.landed) {
-    const rc = el('span', 'cw primary', 'Receive \\u2913');
+    const rc = el('span', 'cw primary', '\\u2913');
     rc.title = 'Hand this result to the tab that sent it (types "check relay ' + l.n + '" there)';
     rc.onclick = function () { send({ type: 'receive', n: l.n }); };
     head.appendChild(rc);
   }
-  const cw = el('span', 'cw', 'Cowork \\u2197');
+  const cw = el('span', 'cw', '\\u2197');
   cw.title = 'Open this lane in Cowork';
   cw.onclick = function () { send({ type: 'openCowork', n: l.n }); };
   head.appendChild(cw);

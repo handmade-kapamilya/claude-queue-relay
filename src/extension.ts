@@ -12,7 +12,7 @@ import { SoundKind, claim, cleanupClaims, macNotify, playSound } from './notify'
 import { Age, Board, BoardMessage, LaneRow, Row, Snapshot } from './board';
 import { Lane, LaneStage, LaneTask, RelayWatcher, laneIsResult, laneLook, laneTaskLabel, taskNameIn } from './relay';
 import { coworkSessionFor, openCowork } from './cowork';
-import { fuzzyPick } from './fuzzy';
+import { fuzzyPickKey } from './fuzzy';
 import { Usage, currentUsage, resetsIn } from './usage';
 import { BASE_DIR, EVENTS_DIR, hooksInstalled, installHooks } from './hooks';
 
@@ -796,15 +796,17 @@ class TabQueue implements vscode.Disposable {
   }
 
   private fuzzyTab(title: string): vscode.Tab | undefined {
-    const names = new Map<string, vscode.Tab>();
+    const byLabel = new Map<string, vscode.Tab>();
+    const items: Array<{ key: string; text: string }> = [];
     for (const tab of tabs.claudeTabs()) {
-      names.set(tab.label, tab);
+      byLabel.set(tab.label, tab);
+      items.push({ key: tab.label, text: tab.label });
       const session = this.sessionOnTab(tab);
-      if (session?.title) names.set(session.title, tab);
+      if (session?.title) items.push({ key: tab.label, text: session.title });
     }
-    const hit = fuzzyPick(title, [...names.keys()]);
-    if (hit) this.log.info(`fuzzy-matched «${title}» → tab "${names.get(hit)!.label}"`);
-    return hit ? names.get(hit) : undefined;
+    const hit = fuzzyPickKey(title, items);
+    this.log.info(hit ? `fuzzy-matched «${title}» → tab "${hit}"` : `no fuzzy match for «${title}» among ${byLabel.size} tabs`);
+    return hit ? byLabel.get(hit) : undefined;
   }
 
   markAllSeen(): void {

@@ -123,6 +123,15 @@ export function closeTab(tab: vscode.Tab): Thenable<boolean> {
   return vscode.window.tabGroups.close(tab, true);
 }
 
+export async function unpin(tab: vscode.Tab): Promise<boolean> {
+  if (!tab.isPinned) return true;
+  const done = await whileActive(tab, async () => {
+    await run('workbench.action.unpinEditor');
+    return true;
+  });
+  return done === true;
+}
+
 export async function unpinActive(label: string): Promise<boolean> {
   const active = activeClaudeTab();
   if (!active || active.label !== label) return false;

@@ -2,7 +2,7 @@
   "name": "claude-tab-queue",
   "displayName": "Claude Tab Queue",
   "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, one board (sidebar or pop-out) with lane-aware tabs, relay lanes that open in Cowork with a check-up that fixes stuck or orphaned tasks, peek / sweep / snooze, and Claude usage rings.",
-  "version": "0.4.2",
+  "version": "0.4.4",
   "publisher": "alex-holtzman",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
@@ -188,12 +188,12 @@
             "onNextSwitch",
             "off"
           ],
-          "default": "immediate",
+          "default": "off",
           "description": "When a session finishes or needs input, pin its tab to the front of the tab bar: right away, the next time you switch tabs, or never."
         },
         "claudeTabQueue.pinnedRow": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "On first run, turn on workbench.editor.pinnedTabsOnSeparateRow so queued (pinned) tabs get their own row at the top."
         },
         "claudeTabQueue.sound": {
@@ -213,7 +213,7 @@
         },
         "claudeTabQueue.markUnread": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Also mark the finished session tab unread (orange dot) using Claude Code's own command."
         },
         "claudeTabQueue.relayLanes": {

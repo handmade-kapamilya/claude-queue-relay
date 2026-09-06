@@ -6,10 +6,10 @@ out into its own window, that answers "what needs me?" at a glance.
 ## What it does
 
 - **Pings and pins.** When a session finishes or needs input it plays a sound, posts a
-  macOS notification and an in-window toast, and pins that tab to the front. If you are
+  macOS notification and an in-window toast, and, if `pinMode` is on, pins that tab to the front (off by default: every Claude tab stays a regular tab). If you are
   already looking at the tab, it stays silent and just moves into Ready.
 - **One list, icons tell the story.** Needs-you (⚠ / footer emoji) at the top, running (pulsing dot),
-  seen, then idle tabs at the bottom; tabs waiting on a relay lane live in that lane's drawer.
+  seen, then idle tabs at the bottom. A tab waiting on a relay lane is a regular row too, with its lane keycap, and is repeated in that lane's drawer.
   `⌃⌘U` goes straight to the most important tab (money > waiting > failed > BLOCKED lane >
   landed lane > file > ready, oldest first); `⌃⌘J` opens a picker of every tab and lane.
 - **Mute.** `⇧⌥⌘J` (or the speaker icon, or `touch ~/.claude-tab-queue/quiet`) holds all
@@ -24,6 +24,8 @@ out into its own window, that answers "what needs me?" at a glance.
 - **Usage meters.** A 5-hour line meter plus 7-day and per-model rings (used part solid gold,
   unused part dotted) with reset countdowns, from the same call `/usage` makes; credits on hover.
 - **Closed is gone.** ⌘W a Claude tab and its row leaves the board at once; ⌘⇧T brings it back.
+  Hover a row and a gold ✕ appears at its right edge (it lingers at half strength for a second
+  after you leave); clicking it closes that tab too.
 - **Focus-safe.** Pins and renames switch tabs for a moment, so they wait until you stop typing
   (log says `deferred …`) and give up after 10 minutes. Nothing steals a keystroke.
 - **Peek.** `⌃⌘.` lists what every finished tab said (its first line), newest first; Enter jumps
@@ -87,5 +89,5 @@ Log: `Claude Tab Queue: Open Log`, or `~/.claude-tab-queue/log.txt`.
 
 ## Settings
 
-`claudeTabQueue.pinMode` (immediate | onNextSwitch | off), `sound`, `macNotification`,
+`claudeTabQueue.pinMode` (immediate | onNextSwitch | off, default off), `sound`, `macNotification`,
 `toast`, `markUnread`, `pinnedRow`, `relayLanes`, `extraRoots`. Mute is a mode, not a setting.

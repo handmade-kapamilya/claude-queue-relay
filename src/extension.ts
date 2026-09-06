@@ -94,6 +94,11 @@ interface LaneTouch {
 
 type Entry = Row & { since: number; session?: Session; tab?: vscode.Tab };
 
+// The board's view of an entry: everything but the live objects behind it.
+function rowOf({ since, session, tab, ...row }: Entry): Row {
+  return row;
+}
+
 interface Step {
   rank: number;
   since: number;
@@ -398,6 +403,7 @@ class TabQueue implements vscode.Disposable {
       session.lanes = session.lanes.filter((lane) => lane !== n);
       this.log.info(`${short(session.id)} collected lane ${n}`);
       this.relay.markSeen(n);
+      if (session.tabLabel) void this.unpin(session.tabLabel);
       this.scheduleSync();
       return;
     }
@@ -728,6 +734,27 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
+  // With pins off, tabs we pinned before a reload stay pinned; make every Claude tab regular again.
+  unpinAll(): void {
+    if (settings.pinMode !== 'off') return;
+    if (!tabs.claudeTabs().some((t) => t.isPinned)) return;
+    this.whenIdle('unpin all', () => this.unpinAllNow());
+  }
+
+  private async unpinAllNow(): Promise<void> {
+    this.dancing = true;
+    try {
+      for (const tab of tabs.claudeTabs()) {
+        if (!tab.isPinned) continue;
+        const ok = await tabs.unpin(tab);
+        this.pinnedByUs.delete(tab.label);
+        this.log.info(`${ok ? 'unpinned' : 'could not unpin'} "${tab.label}" (pins are off)`);
+      }
+    } finally {
+      this.dancing = false;
+    }
+  }
+
   private pinNextPending(except?: string): void {
     for (const label of this.pendingPins) {
       if (label === except || !tabs.findByLabel(label)) continue;
@@ -757,6 +784,7 @@ class TabQueue implements vscode.Disposable {
     if (closed.length || opened.length) this.log.info(`tabs: ${closed.map((t) => `closed "${t.label}"`).concat(opened.map((t) => `opened "${t.label}"`)).join(', ')}`);
     for (const tab of closed) this.tabClosed(tab);
     for (const tab of e?.changed ?? []) this.tabRelabeled(tab);
+    if (opened.length) void this.adoptDormantTabs();
     this.render();
     if (this.dancing) return;
     clearTimeout(this.seenTimer);
@@ -767,9 +795,22 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
+  // Pins and deferred jobs are keyed by label; a renamed tab keeps them under its new name.
+  private rekey(from: string, to: string): void {
+    if (this.pinnedByUs.delete(from)) this.pinnedByUs.add(to);
+    if (this.pendingPins.delete(from)) this.pendingPins.add(to);
+    for (const kind of ['pin', 'rename']) {
+      const job = this.deferred.get(`${kind} "${from}"`);
+      if (!job) continue;
+      this.deferred.delete(`${kind} "${from}"`);
+      this.deferred.set(`${kind} "${to}"`, job);
+    }
+  }
+
   private tabRelabeled(tab: vscode.Tab): void {
     for (const s of this.sessions()) {
       if (s.tab !== tab) continue;
+      if (s.tabLabel && s.tabLabel !== tab.label) this.rekey(s.tabLabel, tab.label);
       s.tabLabel = tab.label;
       if (s.title && !tabs.labelMatches(tab.label, s.title)) void this.learnTitle(s).then(() => this.render());
     }
@@ -843,7 +884,18 @@ class TabQueue implements vscode.Disposable {
         return this.unsnooze(m.id, 'you woke it');
       case 'goToReturn':
         return void this.goToReturn(m.returnTo, m.n, m.taskId);
+      case 'closeTab':
+        return void this.closeRow(m.id, m.label);
     }
+  }
+
+  // The ✕ on a row closes that tab; the board drops the row the moment VS Code reports it closed.
+  async closeRow(id: string | undefined, label: string): Promise<void> {
+    const session = id ? this.registry.sessions.get(id) : undefined;
+    const tab = (session && this.tabOf(session)) ?? tabs.findByLabel(label);
+    if (!tab) return void vscode.window.showWarningMessage(`No open tab named "${label}" in this window.`);
+    await tabs.closeTab(tab);
+    this.log.info(`closed "${tab.label}" from the board`);
   }
 
   async goToSession(id: string): Promise<void> {
@@ -1085,6 +1137,7 @@ class TabQueue implements vscode.Disposable {
     await new Promise((r) => setTimeout(r, 350));
     const typed = await typeIntoFocused(`check relay ${n}`);
     this.relay.markSeen(n);
+    void this.unpin(tab.label);
     this.log.info(`receive lane ${n} → "${tab.label}": ${typed ? 'typed' : 'could not type (Accessibility?)'}`);
     if (!typed) void vscode.window.showWarningMessage(`Couldn't type into the tab (allow VS Code under System Settings → Privacy → Accessibility). Type "check relay ${n}" there.`);
     this.render();
@@ -1376,7 +1429,7 @@ class TabQueue implements vscode.Disposable {
       startBlocked: this.startBlocked(lane),
       problems: problems.filter((p) => p.lane === lane.n).length,
       tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), taskId: t.taskId, status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
-      tabs: entries.filter((e) => e.lanes.includes(lane.n)).map((e) => ({ label: e.label, sessionId: e.sessionId, tabLabel: e.tabLabel })),
+      tabs: entries.filter((e) => e.lanes.includes(lane.n)).map(rowOf),
     };
   }
 
@@ -1399,14 +1452,13 @@ class TabQueue implements vscode.Disposable {
   }
 
   // One list, no sections: what needs Alex first, then running, then seen, then idle and snoozed at the bottom.
-  // Tabs waiting on a relay lane live in that lane's drawer instead, unless they need input right now.
+  // A tab tied to a relay lane is an ordinary row here (its keycap says which lane); the lane's drawer repeats it.
   private snapshot(): Snapshot {
     const entries = this.rows();
     const problems = this.problems();
     this.lastProblems = problems;
     const tier = (e: Entry) => (e.snoozed ? 4 : e.state === 'waiting' ? 0 : e.state === 'ready' ? (e.seen ? 3 : 1) : e.state === 'running' ? 2 : 4);
-    const strip = ({ since, session, tab, ...row }: Entry): Row => row;
-    const visible = entries.map((e, order) => ({ e, order })).filter(({ e }) => !e.lanes.length || e.state === 'waiting' || e.snoozed);
+    const visible = entries.map((e, order) => ({ e, order }));
     visible.sort((a, b) => {
       const ta = tier(a.e);
       const tb = tier(b.e);
@@ -1425,7 +1477,7 @@ class TabQueue implements vscode.Disposable {
         spend: this.usage.spend,
         error: this.usage.meters.length ? undefined : this.usage.error,
       },
-      rows: visible.map(({ e }) => strip(e)),
+      rows: visible.map(({ e }) => rowOf(e)),
       lanes: this.relay.lanes.map((lane) => this.laneRow(lane, entries, problems)),
       problems: problemRows.sort((a, b) => a.lane - b.lane),
     };
@@ -1572,6 +1624,18 @@ function offerHookInstall(): void {
     .then((choice) => choice && run('claudeTabQueue.installHooks'));
 }
 
+// Pinned editors ignore ⌘W by default; a queued tab should close like any other.
+function regularCloseOnce(context: vscode.ExtensionContext, log: Log): void {
+  if (context.globalState.get<boolean>('regularCloseApplied')) return;
+  vscode.workspace
+    .getConfiguration('workbench.editor')
+    .update('preventPinnedEditorClose', 'never', vscode.ConfigurationTarget.Global)
+    .then(
+      () => context.globalState.update('regularCloseApplied', true),
+      (err) => log.warn(`could not set preventPinnedEditorClose: ${err}`),
+    );
+}
+
 function enablePinnedRowOnce(context: vscode.ExtensionContext, log: Log): void {
   if (!settings.pinnedRow || context.globalState.get<boolean>('pinnedRowApplied')) return;
   vscode.workspace
@@ -1636,8 +1700,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   spool.start();
   enablePinnedRowOnce(context, log);
+  regularCloseOnce(context, log);
   if (!hooksInstalled()) offerHookInstall();
   queue.seed();
+  queue.unpinAll();
   queue.render();
   void queue.refreshUsage();
   log.info(`activated; roots=${queue.roots().join(', ')}; claude tabs=${tabs.claudeTabs().map((t) => `"${t.label}"`).join(', ') || 'none'}`);

@@ -41,7 +41,7 @@ export interface LaneRow {
   startBlocked?: string;
   problems: number;
   tasks: TaskRow[];
-  tabs: Array<{ label: string; sessionId?: string; tabLabel?: string }>;
+  tabs: Row[];
 }
 
 export interface ProblemRow {
@@ -86,6 +86,7 @@ export type BoardMessage =
   | { type: 'snooze'; id: string }
   | { type: 'unsnooze'; id: string }
   | { type: 'goToReturn'; returnTo: string; n: number; taskId?: string }
+  | { type: 'closeTab'; id?: string; label: string }
   | { type: 'ready' };
 
 // One HTML board, shown in the sidebar and, popped out, as an editor that can float on a sidecar.
@@ -165,6 +166,12 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .row:hover .zz, .row:hover .x { opacity: .75; }
 .zz:hover, .x:hover { opacity: 1; background: rgba(183,157,112,.22); color: #b79d70; }
 .x:hover { color: #1b1b1b; background: #b79d70; }
+/* Close button: a gold block with a black ✕ at the right edge of a tab row. Full strength while the
+   mouse is on the row, half strength for a second after it leaves, then gone. */
+.cx { flex: none; width: 20px; height: 18px; display: grid; place-items: center; border-radius: 4px; font-size: 11px; font-weight: 700; color: #1b1b1b; background: #b79d70; opacity: 0; transition: opacity .35s ease; }
+.row:hover .cx { opacity: 1; transition: opacity .1s ease; }
+.cx.linger { opacity: .5; }
+.cx:hover { background: #c9b184; }
 /* Meter strip: frozen at the bottom while the list scrolls. */
 .footer { position: fixed; left: 0; right: 0; bottom: 0; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
 .strip { display: flex; align-items: center; gap: 10px; padding: 7px 10px 0; }
@@ -248,9 +255,9 @@ function numIcon(n) {
 function rowIcon(r) {
   if (r.snoozed) return el('span', 'dim', '\\uD83D\\uDCA4');
   if (r.state === 'waiting') return el('span', 'y', '\\u26A0');
-  if (r.lanes.length) return numIcon(r.lanes[0]);
   if (r.state === 'ready') return el('span', r.seen ? 'dim' : 'g', r.emoji || '\\u2713');
   if (r.state === 'running') return el('span', 'dot pulse');
+  if (r.lanes.length) return numIcon(r.lanes[0]);
   return el('span', 'hollow');
 }
 function row(r) {
@@ -268,6 +275,11 @@ function row(r) {
     zz.onclick = function (e) { e.stopPropagation(); send({ type: r.snoozed ? 'unsnooze' : 'snooze', id: r.sessionId }); };
     d.appendChild(zz);
   }
+  const cx = el('span', 'cx', '\\u2715');
+  cx.title = 'Close this tab (\\u2318\\u21E7T reopens it)';
+  cx.onclick = function (e) { e.stopPropagation(); send({ type: 'closeTab', id: r.sessionId, label: r.tabLabel || r.label }); };
+  d.appendChild(cx);
+  d.onmouseleave = function () { cx.classList.add('linger'); setTimeout(function () { cx.classList.remove('linger'); }, 1000); };
   d.title = r.label + '\\n' + (r.peek || r.text);
   d.onclick = function () { send(r.sessionId ? { type: 'goToSession', id: r.sessionId } : { type: 'goToTab', label: r.tabLabel || r.label }); };
   return d;
@@ -426,9 +438,7 @@ function drawer(s) {
     r.appendChild(dismissButton(l, task));
     inner.appendChild(r);
   });
-  l.tabs.forEach(function (tab) {
-    inner.appendChild(child(numIcon(l.n), tab.label, 'waiting', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));
-  });
+  l.tabs.forEach(function (tab) { inner.appendChild(row(tab)); });
   if (!l.tasks.length && !l.tabs.length) inner.appendChild(el('div', 'empty', 'nothing queued'));
   d.appendChild(inner);
   return d;
@@ -464,6 +474,7 @@ const SHORTCUTS = [
   ['1 2 3', 'Click a lane number to slide its queue up'],
   ['\\u21C4', 'Even out the lanes (moves queued tasks, never the one in flight)'],
   ['\\u2661', 'Check-up: orphaned, stale, stuck or blocked tasks, each with a fix'],
+  ['\\u2715', 'Hover a tab row: the gold \\u2715 closes that tab (\\u2318\\u21E7T reopens)'],
   ['\\u2715', 'Hover a task in a lane: clear it into the archive'],
   ['Receive \\u2913', 'Hand a landed result to the tab that sent it'],
   ['\\u25B6', 'Start a queued task now (grayed until the last result is Received)'],

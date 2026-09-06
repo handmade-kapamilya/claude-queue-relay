@@ -1388,7 +1388,7 @@ class TabQueue implements vscode.Disposable {
     const lanes = new Set<number>(session?.lanes ?? []);
     for (const n of this.relay.lanesFor([label, tab.label, session?.title, session?.tabLabel])) lanes.add(n);
     for (const n of this.ties.get(tab.label)?.lanes ?? []) lanes.add(n);
-    const base = { label, tabLabel: tab.label, lanes: [...lanes].sort(), tab };
+    const base = { label, tabLabel: tab.label, lanes: [...lanes].sort(), tab, active: tabs.activeClaudeTab() === tab };
     if (!session) return { ...base, key: `t:${label}`, state: 'idle', text: 'no activity yet', seen: true, since: 0 };
     const state = session.state === 'ended' ? 'idle' : session.state;
     const a = age(state === 'running' ? session.lastEventAt : session.since, state);

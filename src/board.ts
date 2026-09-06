@@ -18,6 +18,7 @@ export interface Row {
   age?: Age;
   lanes: number[];
   seen: boolean;
+  active?: boolean;
 }
 
 export interface TaskRow {
@@ -148,6 +149,9 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .row { display: flex; gap: 7px; align-items: center; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
 .quietrow { opacity: .65; }
 .row:hover { background: var(--vscode-list-hoverBackground); }
+/* Bright gold text marks the row under the mouse and, always, the tab that has focus. */
+.row:hover .label, .row.active .label { color: #c9b184; }
+.row.active .label { font-weight: 600; }
 .icon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; font-size: 12px; }
 .label { flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta { flex: none; max-width: 48%; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -262,7 +266,7 @@ function rowIcon(r) {
 }
 function row(r) {
   const quiet = r.snoozed || r.state === 'idle' || (r.state === 'ready' && r.seen);
-  const d = el('div', 'row ' + (r.age && !r.snoozed ? r.age.tier : 'fresh') + (quiet ? ' quietrow' : ''));
+  const d = el('div', 'row ' + (r.age && !r.snoozed ? r.age.tier : 'fresh') + (quiet ? ' quietrow' : '') + (r.active ? ' active' : ''));
   const icon = el('span', 'icon'); icon.appendChild(rowIcon(r)); d.appendChild(icon);
   d.appendChild(el('span', 'label', r.label));
   const lanes = r.lanes.map(laneMark).join('');

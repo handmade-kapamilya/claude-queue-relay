@@ -111,6 +111,12 @@ interface Fix {
   run: () => unknown;
 }
 
+interface Brief {
+  state: string;
+  detail?: string;
+  next: string;
+}
+
 interface Problem {
   lane: number;
   code: string;
@@ -1314,11 +1320,72 @@ class TabQueue implements vscode.Disposable {
     return out;
   }
 
+  // Where this lane stands and what the next move is, in the words Alex would use.
+  private laneBrief(lane: Lane): Brief {
+    const name = (t?: LaneTask) => (t ? laneTaskLabel(t) : 'the task');
+    const behind = lane.queue.length ? ` ${lane.queue.length} more queued behind it.` : '';
+    const since = (at: number) => {
+      const t = age(at, 'lane').text;
+      return t === 'just now' ? 'just now' : `${t} ago`;
+    };
+    if (laneIsResult(lane) && lane.result) {
+      const tab = this.tabFor(lane.result, lane.n);
+      const word = LANDING_WORDS[lane.stage] ?? lane.stage;
+      const nextTask = lane.queue.length ? ' Then ▶ starts the next one.' : '';
+      return {
+        state: `${name(lane.result)} ${word}`,
+        detail: this.resultDetail(lane),
+        next: lane.seen
+          ? `You already took this one.${lane.queue.length ? ' Press ▶ to start the next task.' : ' The lane is free for a new task.'}`
+          : tab
+            ? `Press ⤓ to hand it to «${tab.label}»; it types "check relay ${lane.n}" there.${nextTask}`
+            : `No tab here is waiting for it. Attach one in the check-up, or open the result file.`,
+      };
+    }
+    if (lane.stage === 'running') {
+      const quiet = Date.now() - Math.max(lane.inbound.mtime, lane.outbound.mtime);
+      return {
+        state: `${name(lane.current)} is in flight`,
+        detail: `Cowork started it ${since(lane.inbound.mtime)}.${behind}`,
+        next:
+          quiet > STUCK_MS
+            ? `Nothing from Cowork for ${hoursText(quiet)}. Re-kick it from the check-up, or open Cowork ↗ and say "run ./relay/drain.sh".`
+            : 'Nothing to do. It pings you here the moment it lands.',
+      };
+    }
+    if (lane.stage === 'ready') {
+      return {
+        state: `${name(lane.current)} is written but not started`,
+        detail: `Waiting since ${since(lane.inbound.mtime)}.${behind}`,
+        next: this.coworkFor(lane.n)
+          ? 'Press ▶ to start it, or open Cowork ↗ and say "run ./relay/drain.sh".'
+          : `No Cowork session named HK-RELAY-${lane.n} is open, so nothing will run it. Open Claude first.`,
+      };
+    }
+    if (lane.stage === 'queued') {
+      return {
+        state: `${lane.queue.length} task${lane.queue.length === 1 ? '' : 's'} waiting, nothing in flight`,
+        detail: `Oldest first: ${name(lane.queue[0])}.`,
+        next: 'Press ▶ on the one you want and Cowork picks it up.',
+      };
+    }
+    return { state: 'This lane is empty', next: 'Send a task from any tab and it shows up here.' };
+  }
+
+  // The one line the result actually says: its HEADLINE, else whatever trails the STATUS word.
+  private resultDetail(lane: Lane): string | undefined {
+    const f = lane.outbound.fields;
+    const trailing = (f.STATUS ?? '').replace(/^\S+\s*/, '').replace(/^[\s(—–:-]+/, '').replace(/\)\s*$/, '');
+    const text = (f.HEADLINE ?? trailing ?? '').trim();
+    if (!text) return undefined;
+    return text.length > 200 ? `${text.slice(0, 199)}…` : text;
+  }
+
   private blockReason(lane: Lane): string {
-    const status = (lane.outbound.fields.STATUS ?? '').replace(/^\S+\s*/, '').replace(/^[\s(—–:-]+/, '');
-    const reason = status || lane.outbound.fields.HEADLINE || lane.outbound.fields.BLOCKED_ON || 'needs you in Cowork';
+    const reason = this.resultDetail(lane) ?? 'needs you in Cowork';
     return reason.length > 110 ? `${reason.slice(0, 109)}…` : reason;
   }
+
 
   private fix(lane: number, code: string, label: string): Promise<unknown> | void {
     const fix = this.lastProblems.find((p) => p.lane === lane && p.code === code)?.fixes.find((f) => f.label === label);
@@ -1450,6 +1517,7 @@ class TabQueue implements vscode.Disposable {
       canStart: !this.startBlocked(lane),
       startBlocked: this.startBlocked(lane),
       problems: problems.filter((p) => p.lane === lane.n).length,
+      brief: this.laneBrief(lane),
       tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), taskId: t.taskId, status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
     };
   }

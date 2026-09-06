@@ -41,6 +41,7 @@ export interface LaneRow {
   canStart: boolean;
   startBlocked?: string;
   problems: number;
+  brief: { state: string; detail?: string; next: string };
   tasks: TaskRow[];
 }
 
@@ -192,7 +193,14 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .keys .kr { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
 .keys kbd { font: 600 11px var(--vscode-editor-font-family, monospace); color: #1b1b1b; background: #b79d70; border-radius: 4px; padding: 1px 6px; min-width: 52px; text-align: center; }
 .drawer { max-height: 0; opacity: 0; overflow: hidden; margin: 0 6px; border-radius: 10px 10px 0 0; transition: max-height .26s ease, opacity .2s ease; }
-.drawer.open { max-height: 320px; opacity: 1; overflow: auto; border: 4px solid #b79d70; border-bottom: 0; background: rgba(183,157,112,.12); box-shadow: 0 -8px 22px rgba(0,0,0,.35); }
+.drawer.open { max-height: 360px; opacity: 1; overflow: auto; border: 2px solid #b79d70; border-bottom: 0; background: var(--vscode-sideBar-background); box-shadow: 0 -8px 22px rgba(0,0,0,.35); }
+body.panel .drawer.open { background: var(--vscode-editor-background); }
+/* The read-out under a lane's tasks: heading, what it said, then the next move. */
+.brief { margin: 7px 2px 0; padding: 7px 9px; border-left: 2px solid #b79d70; background: rgba(183,157,112,.07); border-radius: 0 6px 6px 0; }
+.brief .bs { font-size: 12px; font-weight: 700; color: #c9b184; line-height: 1.3; }
+.brief .bd { margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--vscode-descriptionForeground); }
+.brief .bn { margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: var(--vscode-foreground); }
+.brief .bn i { font-style: normal; font-weight: 700; color: #b79d70; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; margin-right: 5px; }
 .drawer .inner { padding: 8px 6px 8px 8px; }
 .dh { display: flex; align-items: center; gap: 8px; margin: 0 0 6px 4px; }
 .dh b { background: #b79d70; color: #1b1b1b; padding: 1px 9px; border-radius: 999px; font-weight: 700; }
@@ -409,6 +417,16 @@ function reveal(d, key) {
   else requestAnimationFrame(function () { requestAnimationFrame(function () { d.classList.add('open'); }); });
   shownLane = key;
 }
+function briefBlock(b) {
+  const box = el('div', 'brief');
+  box.appendChild(el('div', 'bs', b.state));
+  if (b.detail) box.appendChild(el('div', 'bd', b.detail));
+  const next = el('div', 'bn');
+  next.appendChild(el('i', null, 'Next'));
+  next.appendChild(document.createTextNode(b.next));
+  box.appendChild(next);
+  return box;
+}
 function drawer(s) {
   const d = el('div', 'drawer');
   if (state.showKeys) { d.appendChild(keysSheet()); reveal(d, 'keys'); return d; }
@@ -442,7 +460,7 @@ function drawer(s) {
     r.appendChild(dismissButton(l, task));
     inner.appendChild(r);
   });
-  if (!l.tasks.length) inner.appendChild(el('div', 'empty', 'nothing queued'));
+  inner.appendChild(briefBlock(l.brief));
   d.appendChild(inner);
   return d;
 }

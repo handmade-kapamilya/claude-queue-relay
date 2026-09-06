@@ -164,7 +164,7 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .zz, .x { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0; }
 .row:hover .zz, .row:hover .x { opacity: .75; }
 .zz:hover, .x:hover { opacity: 1; background: rgba(183,157,112,.22); color: #b79d70; }
-.x:hover { color: var(--vscode-charts-red); background: rgba(255,80,80,.15); }
+.x:hover { color: #1b1b1b; background: #b79d70; }
 /* Meter strip: frozen at the bottom while the list scrolls. */
 .footer { position: fixed; left: 0; right: 0; bottom: 0; border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,.25)); background: var(--vscode-sideBar-background); }
 .strip { display: flex; align-items: center; gap: 10px; padding: 7px 10px 0; }
@@ -176,8 +176,8 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .seg:hover { background: var(--vscode-list-hoverBackground); }
 .seg.open { background: #b79d70; color: #1b1b1b; }
 .sd { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.pd { position: absolute; top: 4px; right: 6px; width: 5px; height: 5px; border-radius: 50%; background: var(--vscode-charts-red); }
-.badge { position: absolute; top: 2px; right: 3px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--vscode-charts-red); color: #fff; font-size: 9px; font-weight: 700; display: grid; place-items: center; }
+.pd { position: absolute; top: 4px; right: 6px; width: 5px; height: 5px; border-radius: 50%; background: #b79d70; }
+.badge { position: absolute; top: 2px; right: 3px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: #b79d70; color: #1b1b1b; font-size: 9px; font-weight: 700; display: grid; place-items: center; }
 .keys { padding: 6px 8px; }
 .keys .kr { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
 .keys kbd { font: 600 11px var(--vscode-editor-font-family, monospace); color: #1b1b1b; background: #b79d70; border-radius: 4px; padding: 1px 6px; min-width: 52px; text-align: center; }

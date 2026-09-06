@@ -18,6 +18,9 @@ import { BASE_DIR, EVENTS_DIR, hooksInstalled, installHooks } from './hooks';
 
 const HOME = os.homedir();
 const LANE_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
+// Tab titles carry "<status><lane> <task>": ▶️ in flight, ⏭️ next up, ⏳ further back, ✅ landed, ⚠️ blocked.
+const STATUS_EMOJI = { running: '▶️', next: '⏭️', queued: '⏳', landed: '✅', blocked: '⚠️' } as const;
+const LANE_PREFIX = /^(?:[\u25B6\u23ED\u23F3\u2705\u26A0]\uFE0F?)?[1-5]\uFE0F?\u20E3\s*/;
 const LANDING_WORDS: Partial<Record<LaneStage, string>> = {
   complete: 'landed',
   partial: 'landed PARTIAL',
@@ -196,6 +199,7 @@ class TabQueue implements vscode.Disposable {
   private dancing = false;
   private seenTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
+  private syncTimer?: NodeJS.Timeout;
 
   constructor(private readonly log: Log) {
     this.relay = new RelayWatcher(settings.relayLanes, log);
@@ -209,7 +213,11 @@ class TabQueue implements vscode.Disposable {
       this.board,
       vscode.window.registerWebviewViewProvider('claudeTabQueue.board', this.board, { webviewOptions: { retainContextWhenHidden: true } }),
       this.relay.onDidLand((lane) => this.landed(lane)),
-      this.relay.onDidChange(() => this.render()),
+      this.relay.onDidChange(() => {
+        this.render();
+        clearTimeout(this.syncTimer);
+        this.syncTimer = setTimeout(() => void this.syncLaneTitles(), 800);
+      }),
       vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeTabQueue') && this.render()),
       vscode.window.tabGroups.onDidChangeTabs((e) => this.tabsChanged(e)),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.tabsChanged()),
@@ -224,6 +232,7 @@ class TabQueue implements vscode.Disposable {
   dispose(): void {
     clearTimeout(this.seenTimer);
     clearTimeout(this.refreshTimer);
+    clearTimeout(this.syncTimer);
     for (const d of this.disposables) d.dispose();
   }
 
@@ -297,14 +306,16 @@ class TabQueue implements vscode.Disposable {
       if (!session.lanes.includes(n)) return;
       session.lanes = session.lanes.filter((lane) => lane !== n);
       this.log.info(`${short(session.id)} collected lane ${n}`);
-      await this.retitle(session, (title) => title.replace(new RegExp(`^${n}️?⃣\\s*`), ''));
+      this.relay.markSeen(n);
+      await this.retitle(session, (title) => title.replace(LANE_PREFIX, ''));
       return;
     }
     if (!session.lanes.includes(n)) session.lanes = [...session.lanes, n].sort();
     const lane = this.relay.lanes[n - 1];
     const name = (touch.file && taskNameIn(touch.file)) || (lane && taskNameIn(path.join(lane.dir, 'relay', 'inbound.md')));
     this.log.info(`${short(session.id)} sent "${name ?? '?'}" to lane ${n}`);
-    if (name) await this.retitle(session, () => `${LANE_EMOJI[n - 1] ?? n} ${name}`);
+    if (name) await this.retitle(session, (title) => `${STATUS_EMOJI.queued}${LANE_EMOJI[n - 1] ?? n} ${name || title.replace(LANE_PREFIX, '')}`);
+    setTimeout(() => void this.syncLaneTitles(), 900);
     const file = touch.file ?? (lane && path.join(lane.dir, 'relay', 'inbound.md'));
     const title = session.title ?? session.tabLabel;
     if (file && title) {
@@ -651,6 +662,40 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
+  private lanePrefix(lane: Lane, task: LaneTask): string | undefined {
+    const keycap = LANE_EMOJI[lane.n - 1] ?? String(lane.n);
+    if (task.role === 'result') {
+      if (!laneIsResult(lane) || lane.seen) return undefined;
+      return (lane.stage === 'blocked' ? STATUS_EMOJI.blocked : STATUS_EMOJI.landed) + keycap;
+    }
+    if (task.role === 'current') return STATUS_EMOJI.running + keycap;
+    return (task.position === 1 ? STATUS_EMOJI.next : STATUS_EMOJI.queued) + keycap;
+  }
+
+  // Re-title every tab that has a task in a lane so the prefix reflects where that task sits now.
+  private syncing = false;
+  async syncLaneTitles(): Promise<void> {
+    if (this.syncing) return;
+    this.syncing = true;
+    try {
+      const done = new Set<string>();
+      for (const lane of this.relay.lanes) {
+        for (const task of [lane.result, lane.current, ...lane.queue].filter((t): t is LaneTask => !!t)) {
+          const prefix = this.lanePrefix(lane, task);
+          if (!prefix) continue;
+          const tab = this.tabFor(task, lane.n, true);
+          const session = tab && this.sessionOnTab(tab);
+          if (!tab || !session || done.has(tab.label)) continue;
+          done.add(tab.label);
+          await this.learnTitle(session);
+          await this.retitle(session, (title) => `${prefix} ${title.replace(LANE_PREFIX, '')}`);
+        }
+      }
+    } finally {
+      this.syncing = false;
+    }
+  }
+
   // Going to a landed lane means going to the tab that will say "check relay N".
   private collect(lane: Lane): Promise<void> {
     const tab = this.tabFor(lane.result, lane.n);
@@ -723,7 +768,7 @@ class TabQueue implements vscode.Disposable {
     const session = returnTo ? this.sessionTitled(returnTo) : undefined;
     if (!session) return;
     session.lanes = [...session.lanes.filter((n) => n !== from), to].sort();
-    void this.retitle(session, (title) => title.replace(new RegExp(`^${from}️?⃣`), LANE_EMOJI[to - 1] ?? String(to)));
+    setTimeout(() => void this.syncLaneTitles(), 900);
   }
 
   // "Receive": put the landed result in front of the tab that asked for it by typing its own trigger phrase.
@@ -775,14 +820,14 @@ class TabQueue implements vscode.Disposable {
     await this.focus(tab);
   }
 
-  private tabFor(task: { returnTo?: string; taskId?: string } | undefined, n?: number): vscode.Tab | undefined {
+  private tabFor(task: { returnTo?: string; taskId?: string } | undefined, n?: number, strict = false): vscode.Tab | undefined {
     const record = task?.taskId ? readSenders()[task.taskId] : undefined;
     const recorded = record && this.registry.sessions.get(record.sessionId);
     if (recorded) {
       const tab = this.tabOf(recorded);
       if (tab) return tab;
     }
-    if (n) {
+    if (n && !strict) {
       const waiting = this.sessions().filter((s) => s.lanes.includes(n));
       if (waiting.length === 1) {
         const tab = this.tabOf(waiting[0]);
@@ -1045,6 +1090,7 @@ export function activate(context: vscode.ExtensionContext): void {
     setInterval(() => {
       queue.seed(true);
       queue.reconcile();
+      void queue.syncLaneTitles();
     }, 2 * 60_000),
     setInterval(() => void queue.refreshUsage(), 5 * 60_000),
     ...[20_000, 60_000].map((ms) => setTimeout(() => queue.seed(true), ms)),

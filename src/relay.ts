@@ -260,6 +260,23 @@ export class RelayWatcher implements vscode.Disposable {
     this.refresh(to);
   }
 
+  // What drain.sh does when Cowork runs it, done from here so a chosen queued task goes next:
+  // archive the current inbound and outbound by TASK_ID, then make this task the READY inbound.
+  promote(lane: Lane, file: string): void {
+    const relay = path.join(lane.dir, 'relay');
+    const archive = path.join(relay, 'archive');
+    fs.mkdirSync(archive, { recursive: true });
+    const inbound = path.join(relay, 'inbound.md');
+    for (const [src, kind] of [[inbound, 'inbound'], [lane.outbound.path, 'outbound']] as const) {
+      const id = readLaneFile(src).fields.TASK_ID;
+      if (id && id !== 'none') try { fs.copyFileSync(src, path.join(archive, `${id}.${kind}.md`)); } catch { /* nothing to archive */ }
+    }
+    const text = fs.readFileSync(file, 'utf8').replace(/^STATUS:.*$/m, 'STATUS:    READY');
+    fs.writeFileSync(inbound, text);
+    if (path.resolve(file) !== path.resolve(inbound)) fs.unlinkSync(file);
+    this.refresh(lane);
+  }
+
   markSeen(n: number): void {
     const lane = this.lanes.find((l) => l.n === n);
     if (lane) {

@@ -36,6 +36,8 @@ export interface LaneRow {
   age?: Age;
   seen: boolean;
   landed: boolean;
+  canStart: boolean;
+  startBlocked?: string;
   tasks: TaskRow[];
   tabs: Array<{ label: string; sessionId?: string; tabLabel?: string }>;
 }
@@ -67,6 +69,7 @@ export type BoardMessage =
   | { type: 'next' }
   | { type: 'balance' }
   | { type: 'receive'; n: number }
+  | { type: 'play'; n: number; file: string }
   | { type: 'goToReturn'; returnTo: string; n: number; taskId?: string }
   | { type: 'ready' };
 
@@ -164,6 +167,10 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .cw { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #b79d70; color: #b79d70; cursor: pointer; white-space: nowrap; }
 .cw:hover { background: rgba(183,157,112,.18); }
 .cw.primary { background: #b79d70; color: #1b1b1b; font-weight: 700; }
+.play { width: 16px; height: 16px; display: grid; place-items: center; color: #b79d70; cursor: pointer; border-radius: 3px; }
+.play:hover { background: rgba(183,157,112,.22); }
+.play.off { opacity: .3; cursor: not-allowed; }
+.play.off:hover { background: none; }
 .cw.primary:hover { background: #c9b184; }
 body.panel .footer { background: var(--vscode-editor-background); }
 .rings { width: 42px; height: 42px; flex: none; }
@@ -232,12 +239,22 @@ function taskGlyph(t) {
   if (t.status === 'BLOCKED') return ['y', '\\u26A0'];
   return ['r', '\\u2715'];
 }
-function child(iconNode, label, meta, onclick) {
+function child(iconNode, label, meta, onclick, tip) {
   const r = el('div', 'row');
   const i = el('span', 'icon'); i.appendChild(iconNode); r.appendChild(i);
-  const b = el('div', 'body'); b.appendChild(el('div', 'label', label)); b.appendChild(el('div', 'meta', meta)); r.appendChild(b);
+  r.appendChild(el('span', 'label', label));
+  if (meta) r.appendChild(el('span', 'meta', meta));
+  r.title = tip || (label + (meta ? ' \\u00b7 ' + meta : ''));
   r.onclick = onclick;
   return r;
+}
+const PLAY = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>';
+function playButton(l, task) {
+  const p = el('span', l.canStart ? 'play' : 'play off');
+  p.appendChild(svg(PLAY));
+  p.title = l.canStart ? 'Start this task now: make it lane ' + l.n + "'s next job and tell Cowork to run drain" : (l.startBlocked || 'Not now');
+  p.onclick = function (e) { e.stopPropagation(); if (l.canStart) send({ type: 'play', n: l.n, file: task.file }); };
+  return p;
 }
 function stageMark(l) {
   if (l.stage === 'blocked') return el('span', 'y', '\\u26A0');
@@ -319,11 +336,14 @@ function drawer(s) {
   inner.appendChild(head);
   l.tasks.forEach(function (task) {
     const g = taskGlyph(task);
-    const prefix = task.role === 'result' ? 'Result' : task.role === 'current' ? 'Now' : 'Queued #' + task.position;
-    inner.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n, taskId: task.taskId }); }));
+    const startable = task.role === 'queued' || (task.role === 'current' && task.status === 'READY');
+    const icon = startable ? playButton(l, task) : el('span', g[0], g[1]);
+    const meta = task.role === 'result' ? task.status.toLowerCase() : task.role === 'current' ? (task.status === 'RUNNING' ? 'running' : 'ready for Cowork') : 'queued #' + task.position;
+    const tip = task.label + ' \\u00b7 ' + task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : '');
+    inner.appendChild(child(icon, task.label, meta, function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n, taskId: task.taskId }); }, tip));
   });
   l.tabs.forEach(function (tab) {
-    inner.appendChild(child(numIcon(l.n), 'Tab: \\u00ab' + tab.label + '\\u00bb', 'waiting on this lane', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));
+    inner.appendChild(child(numIcon(l.n), tab.label, 'waiting', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));
   });
   if (!l.tasks.length && !l.tabs.length) inner.appendChild(el('div', 'empty', 'nothing queued'));
   d.appendChild(inner);
@@ -353,6 +373,7 @@ const SHORTCUTS = [
   ['1 2 3', 'Click a lane number to slide its queue up'],
   ['\\u21C4', 'Even out the lanes (moves queued tasks, never the one in flight)'],
   ['Receive \\u2913', 'Hand a landed result to the tab that sent it'],
+  ['\\u25B6', 'Start a queued task now (grayed until the last result is Received)'],
   ['Cowork \\u2197', 'Open that lane in Cowork'],
   ['\\u2197', 'Pop the board out into its own window']
 ];

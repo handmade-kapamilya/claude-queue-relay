@@ -11,7 +11,7 @@ import * as tabs from './tabs';
 import { SoundKind, claim, cleanupClaims, macNotify, playSound } from './notify';
 import { Age, Board, BoardMessage, LaneRow, Row, Snapshot } from './board';
 import { Lane, LaneStage, LaneTask, RelayWatcher, laneIsResult, laneLook, laneTaskLabel, taskNameIn } from './relay';
-import { openCowork } from './cowork';
+import { coworkSessionFor, openCowork } from './cowork';
 import { fuzzyPick } from './fuzzy';
 import { Usage, currentUsage, resetsIn } from './usage';
 import { BASE_DIR, EVENTS_DIR, hooksInstalled, installHooks } from './hooks';
@@ -131,6 +131,12 @@ function age(since: number, kind: string): Age {
 }
 
 // Keystrokes land in whatever has focus, so callers activate the tab and focus Claude's input first.
+function frontmostApp(): Promise<string> {
+  return new Promise((resolve) =>
+    execFile('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true'], (err, out) => resolve(err ? '' : out.trim())),
+  );
+}
+
 function typeIntoFocused(text: string): Promise<boolean> {
   const script = ['-e', `tell application "System Events" to keystroke ${JSON.stringify(text)}`, '-e', 'delay 0.05', '-e', 'tell application "System Events" to key code 36'];
   return new Promise((resolve) => execFile('osascript', script, (err) => resolve(!err)));
@@ -600,6 +606,8 @@ class TabQueue implements vscode.Disposable {
         return this.balance();
       case 'receive':
         return void this.receive(m.n);
+      case 'play':
+        return void this.play(m.n, m.file);
       case 'goToReturn':
         return void this.goToReturn(m.returnTo, m.n, m.taskId);
     }
@@ -736,6 +744,31 @@ class TabQueue implements vscode.Disposable {
     this.render();
   }
 
+  // ▶ on a queued task: make it the lane's READY inbound, then tell that lane's Cowork to drain.
+  async play(n: number, file: string): Promise<void> {
+    const lane = this.relay.lanes.find((l) => l.n === n);
+    if (!lane) return;
+    const blocked = this.startBlocked(lane);
+    if (blocked) return void vscode.window.showWarningMessage(blocked);
+    const task = [lane.current, ...lane.queue].find((t) => t?.file === file);
+    if (!task) return;
+    if (task.role === 'queued') this.relay.promote(lane, file);
+    this.log.info(`play lane ${n}: "${laneTaskLabel(task)}" is READY`);
+    await this.kickCowork(n);
+    this.render();
+  }
+
+  private async kickCowork(n: number): Promise<void> {
+    if (!coworkSessionFor(n)) return void vscode.window.showWarningMessage(`No Cowork session named HK-RELAY-${n}; open one and run ./relay/drain.sh.`);
+    openCowork(n);
+    await new Promise((r) => setTimeout(r, 1500));
+    const front = await frontmostApp();
+    if (front !== 'Claude') return void vscode.window.showWarningMessage(`Cowork didn't come to the front (${front}); tell it to run ./relay/drain.sh.`);
+    const typed = await typeIntoFocused('run ./relay/drain.sh');
+    this.log.info(`kicked Cowork lane ${n}: ${typed ? 'typed drain' : 'could not type'}`);
+    if (!typed) void vscode.window.showWarningMessage(`Couldn't type into Cowork (Accessibility?). Tell lane ${n} to run ./relay/drain.sh.`);
+  }
+
   async goToReturn(returnTo: string, n: number, taskId?: string): Promise<void> {
     const tab = this.tabFor({ returnTo, taskId }, n);
     if (!tab) return void vscode.window.showWarningMessage(returnTo ? `No open tab here named «${returnTo}» (lane ${n}).` : `Lane ${n}: that task has no RETURN-TO tab.`);
@@ -840,6 +873,12 @@ class TabQueue implements vscode.Disposable {
       .map((lane) => lane.n);
   }
 
+  private startBlocked(lane: Lane): string | undefined {
+    if (laneIsResult(lane) && !lane.seen) return `Receive lane ${lane.n}'s result first`;
+    if (lane.current?.status === 'RUNNING') return `Cowork is still running "${laneTaskLabel(lane.current)}"`;
+    return undefined;
+  }
+
   private laneRow(lane: Lane, entries: Entry[]): LaneRow {
     const inFlight = lane.stage === 'running' || lane.stage === 'ready';
     const a = inFlight ? age(lane.inbound.mtime, 'lane') : undefined;
@@ -851,6 +890,8 @@ class TabQueue implements vscode.Disposable {
       age: a,
       seen: lane.seen,
       landed: laneIsResult(lane),
+      canStart: !this.startBlocked(lane),
+      startBlocked: this.startBlocked(lane),
       tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), taskId: t.taskId, status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
       tabs: entries.filter((e) => e.lanes.includes(lane.n)).map((e) => ({ label: e.label, sessionId: e.sessionId, tabLabel: e.tabLabel })),
     };

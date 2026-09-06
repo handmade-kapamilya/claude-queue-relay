@@ -12,6 +12,7 @@ import { SoundKind, claim, cleanupClaims, macNotify, playSound } from './notify'
 import { Age, Board, BoardMessage, LaneRow, Row, Snapshot } from './board';
 import { Lane, LaneStage, LaneTask, RelayWatcher, laneIsResult, laneLook, laneTaskLabel, taskNameIn } from './relay';
 import { openCowork } from './cowork';
+import { fuzzyPick } from './fuzzy';
 import { Usage, currentUsage, resetsIn } from './usage';
 import { BASE_DIR, EVENTS_DIR, hooksInstalled, installHooks } from './hooks';
 
@@ -24,6 +25,14 @@ const LANDING_WORDS: Partial<Record<LaneStage, string>> = {
   abandoned: 'abandoned',
 };
 const QUIET_FILE = path.join(BASE_DIR, 'quiet');
+// TASK_ID → the session/tab that sent it; survives reloads and Claude's shaky RETURN-TO names.
+const SENDERS_FILE = path.join(BASE_DIR, 'lanes.json');
+interface Sender {
+  sessionId: string;
+  title?: string;
+  n: number;
+  at: number;
+}
 // What Alex should look at first, in order.
 const RANK = { money: 0, waiting: 1, failed: 2, blocked: 3, landed: 4, file: 5, ready: 6 } as const;
 type Rank = keyof typeof RANK;
@@ -125,6 +134,36 @@ function age(since: number, kind: string): Age {
 function typeIntoFocused(text: string): Promise<boolean> {
   const script = ['-e', `tell application "System Events" to keystroke ${JSON.stringify(text)}`, '-e', 'delay 0.05', '-e', 'tell application "System Events" to key code 36'];
   return new Promise((resolve) => execFile('osascript', script, (err) => resolve(!err)));
+}
+
+function readSenders(): Record<string, Sender> {
+  try {
+    return JSON.parse(fs.readFileSync(SENDERS_FILE, 'utf8')) as Record<string, Sender>;
+  } catch {
+    return {};
+  }
+}
+
+function writeSenders(all: Record<string, Sender>): void {
+  const cutoff = Date.now() - 14 * 86_400_000;
+  for (const [id, rec] of Object.entries(all)) if (rec.at < cutoff) delete all[id];
+  fs.writeFileSync(SENDERS_FILE, JSON.stringify(all, null, 1));
+}
+
+// Cowork copies RETURN-TO from the task into its result, so writing the real tab title here
+// makes the result find its way home no matter what name the sending Claude guessed.
+function stampReturnTo(file: string, title: string): string | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const taskId = /^TASK_ID:\s*(\S+)/m.exec(text)?.[1];
+  const line = `RETURN-TO: «${title}»`;
+  const next = /^RETURN-TO:.*$/m.test(text) ? text.replace(/^RETURN-TO:.*$/m, line) : text.replace(/^(TASK_ID:.*)$/m, `$1\n${line}`);
+  if (next !== text) fs.writeFileSync(file, next);
+  return taskId;
 }
 
 function watchQuietFile(onChange: () => void): vscode.Disposable {
@@ -260,6 +299,17 @@ class TabQueue implements vscode.Disposable {
     const name = (touch.file && taskNameIn(touch.file)) || (lane && taskNameIn(path.join(lane.dir, 'relay', 'inbound.md')));
     this.log.info(`${short(session.id)} sent "${name ?? '?'}" to lane ${n}`);
     if (name) await this.retitle(session, () => `${LANE_EMOJI[n - 1] ?? n} ${name}`);
+    const file = touch.file ?? (lane && path.join(lane.dir, 'relay', 'inbound.md'));
+    const title = session.title ?? session.tabLabel;
+    if (file && title) {
+      const taskId = stampReturnTo(file, title);
+      if (taskId) {
+        const all = readSenders();
+        all[taskId] = { sessionId: session.id, title, n, at: Date.now() };
+        writeSenders(all);
+        this.log.info(`stamped RETURN-TO «${title}» on ${path.basename(file)} (task ${taskId})`);
+      }
+    }
     this.render();
   }
 
@@ -356,8 +406,7 @@ class TabQueue implements vscode.Disposable {
     const task = lane.result;
     const name = task ? laneTaskLabel(task) : 'result';
     const returnTo = task?.returnTo;
-    const session = returnTo ? this.sessionTitled(returnTo) : undefined;
-    const tab = session ? this.tabOf(session) : returnTo ? tabs.findByLabel(returnTo) : undefined;
+    const tab = this.tabFor(task, lane.n);
     const emoji = LANE_EMOJI[lane.n - 1] ?? `#${lane.n}`;
     this.log.info(`relay lane ${lane.n} ${lane.stage}: ${name}${returnTo ? ` return-to "${returnTo}"` : ''}${tab ? ' (tab found)' : ''}`);
     this.announce({
@@ -552,7 +601,7 @@ class TabQueue implements vscode.Disposable {
       case 'receive':
         return void this.receive(m.n);
       case 'goToReturn':
-        return void this.goToReturn(m.returnTo, m.n);
+        return void this.goToReturn(m.returnTo, m.n, m.taskId);
     }
   }
 
@@ -596,11 +645,8 @@ class TabQueue implements vscode.Disposable {
 
   // Going to a landed lane means going to the tab that will say "check relay N".
   private collect(lane: Lane): Promise<void> {
-    const returnTo = lane.result?.returnTo;
-    const session = returnTo ? this.sessionTitled(returnTo) : undefined;
-    if (session) return this.goToSession(session.id);
-    const tab = returnTo ? tabs.findByLabel(returnTo) : undefined;
-    return tab ? this.goToTab(tab.label) : this.openLaneFile(lane.n);
+    const tab = this.tabFor(lane.result, lane.n);
+    return tab ? this.focus(tab) : this.openLaneFile(lane.n);
   }
 
   async popOut(): Promise<void> {
@@ -677,7 +723,7 @@ class TabQueue implements vscode.Disposable {
     const lane = this.relay.lanes.find((l) => l.n === n);
     if (!lane) return;
     const returnTo = lane.result?.returnTo;
-    const tab = this.tabFor(returnTo);
+    const tab = this.tabFor(lane.result, n);
     if (!tab) return void vscode.window.showWarningMessage(`No open tab here for lane ${n}'s result${returnTo ? ` («${returnTo}»)` : ''}.`);
     if (!vscode.window.state.focused) return void vscode.window.showWarningMessage('Click into VS Code first, then press Receive again.');
     await tabs.activate(tab);
@@ -690,16 +736,42 @@ class TabQueue implements vscode.Disposable {
     this.render();
   }
 
-  async goToReturn(returnTo: string, n: number): Promise<void> {
-    const tab = this.tabFor(returnTo);
+  async goToReturn(returnTo: string, n: number, taskId?: string): Promise<void> {
+    const tab = this.tabFor({ returnTo, taskId }, n);
     if (!tab) return void vscode.window.showWarningMessage(returnTo ? `No open tab here named «${returnTo}» (lane ${n}).` : `Lane ${n}: that task has no RETURN-TO tab.`);
     await this.focus(tab);
   }
 
-  private tabFor(returnTo: string | undefined): vscode.Tab | undefined {
-    if (!returnTo) return undefined;
-    const session = this.sessionTitled(returnTo);
-    return (session && this.tabOf(session)) ?? tabs.findByLabel(returnTo);
+  private tabFor(task: { returnTo?: string; taskId?: string } | undefined, n?: number): vscode.Tab | undefined {
+    const record = task?.taskId ? readSenders()[task.taskId] : undefined;
+    const recorded = record && this.registry.sessions.get(record.sessionId);
+    if (recorded) {
+      const tab = this.tabOf(recorded);
+      if (tab) return tab;
+    }
+    if (n) {
+      const waiting = this.sessions().filter((s) => s.lanes.includes(n));
+      if (waiting.length === 1) {
+        const tab = this.tabOf(waiting[0]);
+        if (tab) return tab;
+      }
+    }
+    const title = task?.returnTo ?? record?.title;
+    if (!title) return undefined;
+    const session = this.sessionTitled(title);
+    return (session && this.tabOf(session)) ?? tabs.findByLabel(title) ?? this.fuzzyTab(title);
+  }
+
+  private fuzzyTab(title: string): vscode.Tab | undefined {
+    const names = new Map<string, vscode.Tab>();
+    for (const tab of tabs.claudeTabs()) {
+      names.set(tab.label, tab);
+      const session = this.sessionOnTab(tab);
+      if (session?.title) names.set(session.title, tab);
+    }
+    const hit = fuzzyPick(title, [...names.keys()]);
+    if (hit) this.log.info(`fuzzy-matched «${title}» → tab "${names.get(hit)!.label}"`);
+    return hit ? names.get(hit) : undefined;
   }
 
   markAllSeen(): void {
@@ -732,6 +804,7 @@ class TabQueue implements vscode.Disposable {
     const label = session?.title ?? tab?.label ?? (session ? sessionLabel(session) : 'tab');
     const lanes = new Set<number>(session?.lanes ?? []);
     for (const n of this.relay.lanesFor([label, tab?.label, session?.title, session?.tabLabel])) lanes.add(n);
+    if (session) for (const n of this.lanesSentBy(session.id)) lanes.add(n);
     const base = { label, tabLabel: tab?.label ?? session?.tabLabel, lanes: [...lanes].sort(), hasTab: !!tab, tab };
     if (!session) return { ...base, key: `t:${label}`, state: 'idle', text: 'no activity yet', seen: true, since: 0 };
     const state = session.state === 'ended' ? 'idle' : session.state;
@@ -759,6 +832,14 @@ class TabQueue implements vscode.Disposable {
     };
   }
 
+  // Lanes that still hold a task this session sent (in flight, queued, or landed but not collected).
+  private lanesSentBy(sessionId: string): number[] {
+    const senders = readSenders();
+    return this.relay.lanes
+      .filter((lane) => [lane.result, lane.current, ...lane.queue].some((t) => t?.taskId && senders[t.taskId]?.sessionId === sessionId && (t.role !== 'result' || laneIsResult(lane))))
+      .map((lane) => lane.n);
+  }
+
   private laneRow(lane: Lane, entries: Entry[]): LaneRow {
     const inFlight = lane.stage === 'running' || lane.stage === 'ready';
     const a = inFlight ? age(lane.inbound.mtime, 'lane') : undefined;
@@ -770,7 +851,7 @@ class TabQueue implements vscode.Disposable {
       age: a,
       seen: lane.seen,
       landed: laneIsResult(lane),
-      tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
+      tasks: tasks.map((t) => ({ role: t.role, label: t.taskName ?? t.returnTo ?? laneTaskLabel(t), taskId: t.taskId, status: t.status, returnTo: t.returnTo, file: t.file, position: t.position })),
       tabs: entries.filter((e) => e.lanes.includes(lane.n)).map((e) => ({ label: e.label, sessionId: e.sessionId, tabLabel: e.tabLabel })),
     };
   }

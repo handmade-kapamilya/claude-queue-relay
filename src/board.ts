@@ -22,6 +22,7 @@ export interface Row {
 export interface TaskRow {
   role: 'result' | 'current' | 'queued';
   label: string;
+  taskId?: string;
   status: string;
   returnTo?: string;
   file: string;
@@ -66,7 +67,7 @@ export type BoardMessage =
   | { type: 'next' }
   | { type: 'balance' }
   | { type: 'receive'; n: number }
-  | { type: 'goToReturn'; returnTo: string; n: number }
+  | { type: 'goToReturn'; returnTo: string; n: number; taskId?: string }
   | { type: 'ready' };
 
 // One HTML board, shown in the sidebar and, popped out, as an editor that can float on a sidecar.
@@ -319,7 +320,7 @@ function drawer(s) {
   l.tasks.forEach(function (task) {
     const g = taskGlyph(task);
     const prefix = task.role === 'result' ? 'Result' : task.role === 'current' ? 'Now' : 'Queued #' + task.position;
-    inner.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n }); }));
+    inner.appendChild(child(el('span', g[0], g[1]), prefix + ': ' + task.label, task.status + (task.returnTo ? ' \\u2192 \\u00ab' + task.returnTo + '\\u00bb' : ''), function () { send({ type: 'goToReturn', returnTo: task.returnTo || '', n: l.n, taskId: task.taskId }); }));
   });
   l.tabs.forEach(function (tab) {
     inner.appendChild(child(numIcon(l.n), 'Tab: \\u00ab' + tab.label + '\\u00bb', 'waiting on this lane', function () { send(tab.sessionId ? { type: 'goToSession', id: tab.sessionId } : { type: 'goToTab', label: tab.tabLabel || tab.label }); }));

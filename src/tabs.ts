@@ -23,6 +23,11 @@ export function activeClaudeTab(): vscode.Tab | undefined {
 }
 
 // Alex is looking at this tab: it is the active editor of a VS Code window that has OS focus.
+// Alex is typing or clicking in this window right now; nothing may steal focus or keystrokes.
+export function userBusy(): boolean {
+  return vscode.window.state.focused && vscode.window.state.active;
+}
+
 export function looking(tab: vscode.Tab): boolean {
   return vscode.window.state.focused && activeClaudeTab()?.label === tab.label;
 }
@@ -114,6 +119,10 @@ export async function pinToFront(tab: vscode.Tab, opts: PinOptions): Promise<boo
 
 // Keyed by label rather than Tab identity: VS Code may hand out a new Tab
 // object after a pin/move, but the label survives.
+export function closeTab(tab: vscode.Tab): Thenable<boolean> {
+  return vscode.window.tabGroups.close(tab, true);
+}
+
 export async function unpinActive(label: string): Promise<boolean> {
   const active = activeClaudeTab();
   if (!active || active.label !== label) return false;

@@ -16,12 +16,28 @@ out into its own window, that answers "what needs me?" at a glance.
   pings until you unmute; money / failed / BLOCKED lanes still break through; one digest of
   what landed when you unmute.
 - **Relay lanes.** Watches `~/Documents/hk-relay{,-2,-3}`. A tab that sends a task to a lane
-  gets that lane's number as its icon, is renamed `N️⃣ <task name>`, and appears under the
-  lane. Lanes show READY → RUNNING → COMPLETE | PARTIAL | BLOCKED (BLOCKED = caution, and it
+  gets that lane's number as its icon and appears under the lane; its title becomes
+  `<status>N️⃣ <task name>` where ▶️ = in flight, ⏭️ = next up, ⏳ = queued behind, ✅ = landed,
+  ⚠️ = blocked, re-synced as the queue moves. Lanes show READY → RUNNING → COMPLETE | PARTIAL | BLOCKED (BLOCKED = caution, and it
   moves into "Waiting on you"), expand to Result / Now / Queued items, and clicking a lane
   opens its Cowork session.
 - **Usage meters.** A 5-hour line meter plus 7-day and per-model rings (used part solid gold,
   unused part dotted) with reset countdowns, from the same call `/usage` makes; credits on hover.
+- **Closed is gone.** ⌘W a Claude tab and its row leaves the board at once; ⌘⇧T brings it back.
+- **Focus-safe.** Pins and renames switch tabs for a moment, so they wait until you stop typing
+  (log says `deferred …`) and give up after 10 minutes. Nothing steals a keystroke.
+- **Peek.** `⌃⌘.` lists what every finished tab said (its first line), newest first; Enter jumps
+  there. Ready rows show that line as their text too.
+- **Sweep 🤙.** `⌃⌘⌫` (or the broom icon) lists your tabs with the 🤙-done ones pre-checked and
+  closes the ones you confirm; `⌘⇧T` reopens.
+- **Snooze.** Hover a finished or waiting row and click 💤: 30 minutes, 2 hours, or until a lane
+  lands. The row drops to the bottom and pings again when it's time. Survives a reload.
+- **Lane check-up.** The pulse icon next to ⇄ shows a red count when a lane has something that
+  won't fix itself: a task whose tab is gone (orphan), one waiting more than 7 days (stale), a
+  RUNNING task with no output for 2 hours (stuck), a BLOCKED result, a READY lane with no
+  Cowork session, or VS Code missing Accessibility. Each comes with its buttons: Dismiss
+  (archives it as CANCELLED / CONSUMED and empties the slot), Attach to tab…, Start, Re-kick
+  Cowork, Reset to READY, Open Cowork, Receive. Hover any task in a lane drawer for ✕ = Dismiss.
 - **Age colors.** Waiting rows turn amber after 20 minutes and red after 60; a running tab
   with no activity for 20 minutes is flagged.
 - **Receive.** In a lane's drawer, Receive puts the landed result in front of the tab that asked
@@ -45,8 +61,11 @@ and the bolded ask on a ⚠️ / 💸 / 📂 line becomes the row text.
 2. Every VS Code window reads the spool and keeps the sessions whose `cwd` is inside its
    workspace folders (worktrees under the repo count).
 3. A session is matched to its tab by the tab that was active when the prompt was
-   submitted, else by title (`ai-title` / `custom-title` lines in the transcript; Claude
-   Code truncates labels to ~24 chars, so matching is prefix-based).
+   submitted, else by title (`ai-title` / `custom-title` lines in the transcript; a custom
+   title wins however old it is, like Claude's own tab; Claude Code truncates labels to
+   ~24 chars, so matching is prefix-based). Lane prefixes are always put on the AI title,
+   so a tab gets its own name back when its task is done; a name you gave a tab yourself
+   is never touched.
 4. A session that writes a lane's `inbound.md` / `queue/*.md` is the one waiting on that
    lane; reading the lane's `outbound.md` releases it.
 5. VS Code cannot reorder, rename, or pin an inactive tab, so those actions briefly activate

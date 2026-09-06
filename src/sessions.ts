@@ -9,6 +9,8 @@ export interface Session {
   cwd: string;
   transcriptPath?: string;
   title?: string;
+  aiTitle?: string;
+  customTitle?: string;
   state: State;
   since: number;
   reason?: string;
@@ -20,6 +22,8 @@ export interface Session {
   lastEventAt: number;
   lanes: number[];
   dormant?: boolean;
+  snoozedUntil?: number;
+  snoozedForLane?: number;
 }
 
 export interface Transition {

@@ -1,8 +1,8 @@
 {
   "name": "claude-tab-queue",
   "displayName": "Claude Tab Queue",
-  "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, one board (sidebar or pop-out) with lane-aware tabs, relay lanes that open in Cowork, and Claude usage rings.",
-  "version": "0.3.14",
+  "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, one board (sidebar or pop-out) with lane-aware tabs, relay lanes that open in Cowork with a check-up that fixes stuck or orphaned tasks, peek / sweep / snooze, and Claude usage rings.",
+  "version": "0.4.0",
   "publisher": "alex-holtzman",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
@@ -107,6 +107,33 @@
         "title": "Toggle Toast Notifications",
         "category": "Claude Tab Queue",
         "icon": "$(bell)"
+      },
+      {
+        "command": "claudeTabQueue.peek",
+        "title": "Peek At What Finished Tabs Said",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.sweep",
+        "title": "Sweep Done Tabs",
+        "category": "Claude Tab Queue",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "claudeTabQueue.snooze",
+        "title": "Snooze Tab",
+        "category": "Claude Tab Queue"
+      },
+      {
+        "command": "claudeTabQueue.doctor",
+        "title": "Lane Check-Up",
+        "category": "Claude Tab Queue",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "claudeTabQueue.dismissLaneTask",
+        "title": "Dismiss Relay Lane Task",
+        "category": "Claude Tab Queue"
       }
     ],
     "viewsContainers": {
@@ -226,6 +253,16 @@
         "command": "claudeTabQueue.toggleQuiet",
         "key": "shift+alt+cmd+j",
         "mac": "shift+alt+cmd+j"
+      },
+      {
+        "command": "claudeTabQueue.peek",
+        "key": "ctrl+cmd+.",
+        "mac": "ctrl+cmd+."
+      },
+      {
+        "command": "claudeTabQueue.sweep",
+        "key": "ctrl+cmd+backspace",
+        "mac": "ctrl+cmd+backspace"
       }
     ]
   },

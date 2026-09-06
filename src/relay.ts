@@ -277,6 +277,35 @@ export class RelayWatcher implements vscode.Disposable {
     this.refresh(lane);
   }
 
+  // Clearing a task means archiving it: the file lands in relay/archive as CANCELLED (results:
+  // CONSUMED), its slot is emptied, and any unconsumed receipt copy in outbox/ goes with it.
+  dismiss(lane: Lane, task: LaneTask): string {
+    const relay = path.join(lane.dir, 'relay');
+    const archive = path.join(relay, 'archive');
+    fs.mkdirSync(archive, { recursive: true });
+    const id = task.taskId ?? path.basename(task.file, '.md');
+    const status = task.role === 'result' ? 'CONSUMED' : 'CANCELLED';
+    const stamp = `DISMISSED: ${new Date().toISOString()} by Claude Tab Queue`;
+    const text = readText(task.file);
+    const stamped = /^STATUS:.*$/m.test(text) ? text.replace(/^STATUS:.*$/m, `STATUS:    ${status}\n${stamp}`) : `${text}\nSTATUS:    ${status}\n${stamp}\n`;
+    const dest = freeName(path.join(archive, `${id}.${task.role === 'result' ? 'outbound' : 'inbound'}.md`));
+    fs.writeFileSync(dest, stamped);
+    if (task.role === 'queued') fs.unlinkSync(task.file);
+    else fs.writeFileSync(task.file, EMPTY_SLOT[task.role === 'result' ? 'outbound' : 'inbound']);
+    if (task.role === 'result') {
+      try { fs.unlinkSync(path.join(relay, 'outbox', `${id}.md`)); } catch { /* no receipt copy */ }
+      if (lane.inbound.fields.TASK_ID === task.taskId) fs.writeFileSync(lane.inbound.path, EMPTY_SLOT.inbound);
+    }
+    this.refresh(lane);
+    return dest;
+  }
+
+  setStatus(lane: Lane, file: string, status: string): void {
+    const text = readText(file);
+    fs.writeFileSync(file, text.replace(/^STATUS:.*$/m, `STATUS:    ${status}`));
+    this.refresh(lane);
+  }
+
   markSeen(n: number): void {
     const lane = this.lanes.find((l) => l.n === n);
     if (lane) {
@@ -314,6 +343,33 @@ export class RelayWatcher implements vscode.Disposable {
       lane.lastLandedKey = undefined;
     }
     this.changed.fire(lane);
+  }
+}
+
+const EMPTY_SLOT = {
+  inbound: '=== TASK HANDOVER -> Cowork ===\nTASK_ID:   none\nSTATUS:    EMPTY\n=== END ===\n',
+  outbound: '=== RESULTS HANDOVER -> VSCode ===\nTASK_ID:   none\nSTATUS:    EMPTY\n=== END ===\n',
+};
+
+function readText(file: string): string {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function freeName(p: string): string {
+  if (!fs.existsSync(p)) return p;
+  const dismissed = p.replace(/\.md$/, '-dismissed.md');
+  return fs.existsSync(dismissed) ? p.replace(/\.md$/, `-dismissed-${Date.now()}.md`) : dismissed;
+}
+
+export function fileAgeMs(file: string): number {
+  try {
+    return Date.now() - fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
   }
 }
 

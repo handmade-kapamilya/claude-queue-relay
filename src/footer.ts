@@ -62,3 +62,27 @@ function actionOn(line: string, emoji: string): string | undefined {
   const clean = text.replace(/[*_`️]/g, '').replace(/^[\s:—–-]+/, '').trim();
   return clean ? clean.slice(0, 60) : undefined;
 }
+
+const FOOTER_MARK = /[🤙⚠💸⏳📂❌]|[1-5]\uFE0F?\u20E3/;
+
+// The first real line of a reply, for peeking at what a finished tab said without opening it.
+export function headline(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  for (const raw of message.split('\n')) {
+    if (FOOTER_MARK.test(raw)) continue;
+    const line = plain(raw);
+    if (!line || /^(open items|status)\b/i.test(line)) continue;
+    return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+  }
+  return undefined;
+}
+
+function plain(line: string): string {
+  if (/^\s*(\|.*\||[-=*_]{3,})\s*$/.test(line)) return '';
+  return line
+    .replace(/^#+\s*/, '')
+    .replace(/^\s*(?:[-*>]|\d+\.)\s+/, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`~]/g, '')
+    .trim();
+}

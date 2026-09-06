@@ -20,7 +20,6 @@ import { BASE_DIR, EVENTS_DIR, hooksInstalled, installHooks } from './hooks';
 const HOME = os.homedir();
 const LANE_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
 // Tab titles carry "<status><lane> <task>": ▶️ in flight, ⏭️ next up, ⏳ further back, ✅ landed, ⚠️ blocked.
-const STATUS_EMOJI = { running: '▶️', next: '⏭️', queued: '⏳', landed: '✅', blocked: '⚠️' } as const;
 // Anything short in front of the lane keycap is a prefix we wrote (or a stray character from a rename).
 const LANE_PREFIX = /^[^\s]{0,3}?[1-5]️?⃣\s*/;
 // A shell command that actually runs the lane's send script, not one that merely mentions it.
@@ -119,10 +118,9 @@ interface Problem {
   fixes: Fix[];
 }
 
-// Which lanes a tab is tied to through their task files, and the title prefix that earns it.
+// Which lanes a tab is tied to through their task files.
 interface Tie {
   lanes: Set<number>;
-  prefix?: string;
 }
 
 interface Deferred {
@@ -943,21 +941,12 @@ class TabQueue implements vscode.Disposable {
 
   // --- lane titles ---------------------------------------------------------
 
-  private lanePrefix(lane: Lane, task: LaneTask): string | undefined {
-    if (task.role === 'result') {
-      if (!laneIsResult(lane) || lane.seen) return undefined;
-      return (lane.stage === 'blocked' ? STATUS_EMOJI.blocked : STATUS_EMOJI.landed) + keycap(lane.n);
-    }
-    if (task.role === 'current') return STATUS_EMOJI.running + keycap(lane.n);
-    return (task.position === 1 ? STATUS_EMOJI.next : STATUS_EMOJI.queued) + keycap(lane.n);
-  }
-
   private scheduleSync(ms = 800): void {
     clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => void this.syncLaneTitles(), ms);
   }
 
-  // Every tab's title says where its lane task sits right now; a tab with no task gets its own name back.
+  // Tab titles carry no lane marker (the board's lane circle is enough); one left over from an older version is removed.
   async syncLaneTitles(): Promise<void> {
     if (this.syncing) return;
     this.syncing = true;
@@ -975,31 +964,27 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
-  // "<status><lane> <original name>" while a lane task is out; the plain name once none is.
-  // A name Alex gave a tab himself (no prefix, no task) is never touched.
-  private desiredTitle(session: Session, tab: vscode.Tab): string | undefined {
+  // A title that still starts with an old lane marker gets its plain name back; every other name is left alone.
+  private desiredTitle(session: Session, _tab: vscode.Tab): string | undefined {
     const current = session.title;
-    if (!current) return undefined;
+    if (!current || !LANE_PREFIX.test(current)) return undefined;
     const body = (session.aiTitle ?? current).replace(LANE_PREFIX, '').trim();
-    const prefix = this.ties.get(tab.label)?.prefix;
-    const want = prefix ? `${prefix} ${body}` : LANE_PREFIX.test(current) ? body : undefined;
-    return want && want !== current ? want : undefined;
+    return body && body !== current ? body : undefined;
   }
 
-  // Every lane task resolved to its tab, once per pass, so hiding, drawer rows and titles agree.
+  // Every lane task resolved to its tab, once per pass, so rows, drawer rows and titles agree.
   private tiesByTab(): Map<string, Tie> {
     const map = new Map<string, Tie>();
-    const tie = (label: string, n: number, prefix?: string) => {
+    const tie = (label: string, n: number) => {
       const t = map.get(label) ?? { lanes: new Set<number>() };
       t.lanes.add(n);
-      t.prefix ??= prefix;
       map.set(label, t);
     };
     for (const lane of this.relay.lanes) {
       for (const task of [lane.result, lane.current, ...lane.queue]) {
         if (!task || (task.role === 'result' && (!laneIsResult(lane) || lane.seen))) continue;
         const tab = this.tabFor(task, lane.n, true);
-        if (tab) tie(tab.label, lane.n, this.lanePrefix(lane, task));
+        if (tab) tie(tab.label, lane.n);
       }
     }
     // A tab whose footer says it awaits a lane still counts while that lane has work, even if no file names it.
@@ -1010,7 +995,7 @@ class TabQueue implements vscode.Disposable {
       for (const n of s.lanes) {
         const lane = this.lane(n);
         if (!lane || (!lane.current && !lane.queue.length) || map.get(tab.label)?.lanes.has(n)) continue;
-        tie(tab.label, n, STATUS_EMOJI.queued + keycap(n));
+        tie(tab.label, n);
       }
     }
     return map;

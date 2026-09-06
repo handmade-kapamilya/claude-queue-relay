@@ -168,7 +168,7 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .x:hover { color: #1b1b1b; background: #b79d70; }
 /* Close button: a gold block with a black ✕ at the right edge of a tab row. Full strength while the
    mouse is on the row, half strength for a second after it leaves, then gone. */
-.cx { flex: none; width: 20px; height: 18px; display: grid; place-items: center; border-radius: 4px; font-size: 11px; font-weight: 700; color: #1b1b1b; background: #b79d70; opacity: 0; transition: opacity .35s ease; }
+.cx { flex: none; width: 20px; height: 18px; display: grid; place-items: center; border-radius: 4px; font-size: 11px; font-weight: 700; color: #1b1b1b; background: #b79d70; opacity: 0; transition: opacity .18s ease; }
 .row:hover .cx { opacity: 1; transition: opacity .1s ease; }
 .cx.linger { opacity: .5; }
 .cx:hover { background: #c9b184; }
@@ -279,7 +279,7 @@ function row(r) {
   cx.title = 'Close this tab (\\u2318\\u21E7T reopens it)';
   cx.onclick = function (e) { e.stopPropagation(); send({ type: 'closeTab', id: r.sessionId, label: r.tabLabel || r.label }); };
   d.appendChild(cx);
-  d.onmouseleave = function () { cx.classList.add('linger'); setTimeout(function () { cx.classList.remove('linger'); }, 1000); };
+  d.onmouseleave = function () { cx.classList.add('linger'); setTimeout(function () { cx.classList.remove('linger'); }, 500); };
   d.title = r.label + '\\n' + (r.peek || r.text);
   d.onclick = function () { send(r.sessionId ? { type: 'goToSession', id: r.sessionId } : { type: 'goToTab', label: r.tabLabel || r.label }); };
   return d;

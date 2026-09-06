@@ -262,6 +262,31 @@ export class RelayWatcher implements vscode.Disposable {
     this.refresh(to);
   }
 
+  // What balance may move: queued tasks (newest first) and a READY inbound Cowork hasn't picked up.
+  // Running tasks and landed results stay where they are.
+  movable(lane: Lane): LaneTask[] {
+    const ready = lane.current?.status === 'READY' ? [lane.current] : [];
+    return [...[...lane.queue].reverse(), ...ready].filter((t) => !t.chained);
+  }
+
+  // Moves a task to another lane: a queued file goes into that lane's queue; a READY inbound becomes
+  // that lane's inbound when its slot is free, else joins its queue, and the old slot is emptied.
+  moveTask(task: LaneTask, to: Lane): void {
+    if (task.role === 'queued') return this.moveQueued(task, to);
+    const from = this.lanes.find((l) => l.current === task);
+    if (!from || from === to || task.status !== 'READY') return;
+    const stamped = readText(task.file).replace(/^(TASK_ID:.*)$/m, `$1\nMOVED:     lane ${from.n} → lane ${to.n} by Claude Tab Queue`);
+    const slotFree = !to.current;
+    const dest = slotFree
+      ? to.inbound.path
+      : freeName(path.join(to.dir, 'relay', 'queue', `${task.taskId ?? path.basename(task.file, '.md')}.md`));
+    if (!slotFree) fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, stamped);
+    fs.writeFileSync(task.file, EMPTY_SLOT.inbound);
+    this.refresh(from);
+    this.refresh(to);
+  }
+
   // What drain.sh does when Cowork runs it, done from here so a chosen queued task goes next:
   // archive the current inbound and outbound by TASK_ID, then make this task the READY inbound.
   promote(lane: Lane, file: string): void {

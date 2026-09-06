@@ -1105,7 +1105,8 @@ class TabQueue implements vscode.Disposable {
     this.render();
   }
 
-  // Move queued tasks from the fullest lane to the emptiest until no lane is 2+ ahead.
+  // Move work from the fullest lane to the emptiest until no lane is 2+ ahead. Queued tasks and a
+  // READY inbound move; a task Cowork is running and a landed result never do. Always says what happened.
   balance(): void {
     const moved: string[] = [];
     for (let guard = 0; guard < 9; guard++) {
@@ -1113,15 +1114,19 @@ class TabQueue implements vscode.Disposable {
       const from = lanes[0];
       const to = lanes[lanes.length - 1];
       if (!from || !to || this.relay.load(from) - this.relay.load(to) < 2) break;
-      const task = [...from.queue].reverse().find((t) => !t.chained);
+      const task = this.relay.movable(from)[0];
       if (!task) break;
-      this.relay.moveQueued(task, to);
+      this.relay.moveTask(task, to);
       this.retag(task.returnTo, from.n, to.n);
       moved.push(`"${laneTaskLabel(task)}" ${from.n} → ${to.n}`);
     }
-    this.log.info(moved.length ? `balanced lanes: ${moved.join('; ')}` : 'balance: lanes already even');
-    if (!moved.length) return void vscode.window.setStatusBarMessage('Lanes are already even', 2500);
-    this.toast(`Evened out the lanes: ${moved.join(' · ')}`, 'Show queue', () => run('claudeTabQueue.board.focus'));
+    const loads = this.relay.lanes.map((l) => `lane ${l.n}: ${this.relay.load(l)}`).join(' · ');
+    this.log.info(moved.length ? `balanced lanes: ${moved.join('; ')} (${loads})` : `balance: nothing to move (${loads})`);
+    if (!moved.length) {
+      void vscode.window.showInformationMessage(`Lanes are as even as they can be (${loads}). Only queued tasks and a READY inbound move; running tasks and landed results stay put.`);
+      return;
+    }
+    void vscode.window.showInformationMessage(`Evened out the lanes: ${moved.join(' · ')} (now ${loads})`, 'Show queue').then((c) => c && run('claudeTabQueue.board.focus'));
     this.render();
   }
 

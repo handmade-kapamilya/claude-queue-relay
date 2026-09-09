@@ -15,10 +15,15 @@ out into its own window, that answers "what needs me?" at a glance.
   opens a picker of every tab and lane.
 - **Tab groups.** The folder icon above the list makes a new group; drag rows onto its header to
   add them, drag the header itself to reorder past other rows and groups. Click the name to
-  rename it in place, the dot to pick one of 8 colors, the chevron to collapse it. The ✕ on
+  rename it in place, the dot to pick one of 8 muted colors, the chevron to collapse it. The ✕ on
   a group's header ungroups its tabs (they stay open) without closing anything.
-- **The focused tab stands out.** Whichever tab is active gets a gold-tinted row, bold text, and
-  its close ✕ stays visible without a hover — not just the tab under your mouse.
+- **Parked.** A fixed shelf pinned above the relay lanes, not a tab group — click it to slide it
+  open, drag any row onto it (open or closed) to park that tab, drag a parked row back into the
+  list to unpark it. Sidebar and a popped-out board share the same groups/order/Parked state, so
+  popping the board out never starts you over.
+- **The focused tab stands out.** Whichever tab is active gets a gold-tinted row with a left
+  accent bar, bold brighter text, and its close ✕ stays visible without a hover — not just the
+  tab under your mouse.
 - **Mute.** `⇧⌥⌘J` (or the speaker icon, or `touch ~/.claude-queue-relay/quiet`) holds all
   pings until you unmute; money / failed / BLOCKED lanes still break through; one digest of
   what landed when you unmute.

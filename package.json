@@ -2,7 +2,7 @@
   "name": "claude-queue-relay",
   "displayName": "Claude Queue Relay",
   "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, drag-to-reorder rows with Chrome-style color-coded groups, one board (sidebar or pop-out), optional relay lanes that hand tasks to Claude Cowork with a check-up that fixes stuck or orphaned tasks, peek / sweep / snooze, and Claude usage rings.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "alex-holtzman",
   "license": "MIT",
   "repository": {

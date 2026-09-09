@@ -940,9 +940,26 @@ class TabQueue implements vscode.Disposable {
   async goToSession(id: string): Promise<void> {
     const session = this.registry.sessions.get(id);
     if (!session) return;
-    const tab = this.tabOf(session);
-    if (!tab) return void vscode.window.showWarningMessage(`No open tab for "${sessionLabel(session)}" in this window.`);
+    const tab = this.tabOf(session) ?? (await this.resumeHere(session));
+    if (!tab) return void vscode.window.showWarningMessage(`Could not open "${sessionLabel(session)}" in this window.`);
     await this.focus(tab);
+  }
+
+  // No tab for this session in this window — it's likely open in a different
+  // one instead of actually closed. Resume it here rather than just saying so.
+  private async resumeHere(session: Session): Promise<vscode.Tab | undefined> {
+    let tab: vscode.Tab | undefined;
+    try {
+      tab = await tabs.resumeSession(session.id);
+    } catch (err) {
+      this.log.warn(`resume failed for ${short(session.id)}: ${err}`);
+      return undefined;
+    }
+    if (!tab) return undefined;
+    session.tab = tab;
+    session.tabLabel = tab.label;
+    this.log.info(`resumed ${short(session.id)} → tab "${tab.label}" in this window`);
+    return tab;
   }
 
   async goToTab(label: string): Promise<void> {

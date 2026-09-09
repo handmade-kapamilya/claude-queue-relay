@@ -82,6 +82,22 @@ export async function focusClaudeInput(): Promise<void> {
   }
 }
 
+// The session has no tab in THIS window — it may be closed, or it may simply
+// live in another VS Code window (there is no API to see other windows' tabs).
+// Ask the Claude Code extension to resume it by id, which opens a fresh tab
+// here regardless of where else it's open, then wait for that tab to appear.
+export async function resumeSession(sessionId: string, timeoutMs = 5000): Promise<vscode.Tab | undefined> {
+  const before = new Set(claudeTabs());
+  await run('claude-vscode.editor.open', sessionId);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const fresh = claudeTabs().find((t) => !before.has(t));
+    if (fresh) return fresh;
+    await pause(150);
+  }
+  return activeClaudeTab();
+}
+
 async function whileActive<T>(tab: vscode.Tab, work: () => Promise<T>): Promise<T | undefined> {
   const prev = vscode.window.tabGroups.activeTabGroup.activeTab;
   const wasActive = prev === tab;

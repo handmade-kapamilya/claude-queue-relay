@@ -58,6 +58,17 @@ export interface MeterRow {
   resetsIn?: string;
 }
 
+// Row order + tab groups. Lives in the extension host (not per-webview vscode.setState) so
+// the sidebar and a popped-out panel — two separate webviews — see the same layout instead
+// of the popout always starting blank.
+export interface LayoutState {
+  topOrder: string[];
+  groups: Array<{ id: string; name: string; color: string }>;
+  groupMembers: Record<string, string[]>;
+  groupOf: Record<string, string>;
+  collapsed: Record<string, boolean>;
+}
+
 export interface Snapshot {
   quiet?: { held: number };
   sound: boolean;
@@ -66,6 +77,11 @@ export interface Snapshot {
   rows: Row[];
   lanes: LaneRow[];
   problems: ProblemRow[];
+  // Optional: nothing currently populates or reads this (extension.ts's snapshot() doesn't set
+  // it, and Board doesn't look at it) — left optional so it doesn't block the build while that
+  // wiring is unfinished elsewhere. The actual sidebar/popout layout sync lives in Board.layout
+  // below, driven by the webview's own 'layout'/'layoutSync' messages.
+  layout?: LayoutState;
 }
 
 export type BoardMessage =
@@ -89,13 +105,30 @@ export type BoardMessage =
   | { type: 'unsnooze'; id: string }
   | { type: 'goToReturn'; returnTo: string; n: number; taskId?: string }
   | { type: 'closeTab'; id?: string; label: string }
+  | { type: 'saveLayout'; layout: LayoutState }
+  // Row order, tab groups, and the Parked shelf — the webview's own client-side state
+  // (`vscode.setState`), which is per-webview and so would otherwise leave the sidebar and a
+  // popped-out panel showing two different boards. The webview that renders first hands its
+  // restored layout here; Board caches it and mirrors it to every other open surface, and every
+  // later drag/group/park edit re-sends it so the surfaces stay in sync for the rest of the session.
+  | { type: 'layout'; layout: BoardLayout }
   | { type: 'ready' };
+
+export interface BoardLayout {
+  topOrder: string[];
+  groups: Array<{ id: string; name: string; color: string }>;
+  groupMembers: Record<string, string[]>;
+  groupOf: Record<string, string>;
+  collapsed: Record<string, boolean>;
+  parked: string[];
+}
 
 // One HTML board, shown in the sidebar and, popped out, as an editor that can float on a sidecar.
 export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
   private panel?: vscode.WebviewPanel;
   private last?: Snapshot;
+  private layout?: BoardLayout;
 
   constructor(private readonly onMessage: (m: BoardMessage) => void) {}
 
@@ -138,7 +171,16 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
     webview.options = { enableScripts: true };
     webview.html = html(surface);
     const sub = webview.onDidReceiveMessage((m: BoardMessage) => {
+      // Layout messages are a client-view concern Board owns entirely: cache + mirror to every
+      // other open surface, don't forward to the domain onMessage handler.
+      if (m.type === 'layout') {
+        this.layout = m.layout;
+        this.post({ type: 'layoutSync', layout: m.layout });
+        return;
+      }
       if (m.type !== 'ready') return this.onMessage(m);
+      // Layout first, so it's applied before the webview's first render off the snapshot below.
+      if (this.layout) void webview.postMessage({ type: 'layoutSync', layout: this.layout });
       if (this.last) void webview.postMessage({ type: 'snapshot', snapshot: this.last });
     });
     onDidDispose(() => sub.dispose());
@@ -146,14 +188,20 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
 }
 
 const CSS = `
+html, body { overflow-x: hidden; }
 body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
 .row { display: flex; gap: 7px; align-items: center; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
 .quietrow { opacity: .65; }
 .row:hover { background: var(--vscode-list-hoverBackground); }
 /* Bright gold text marks the row under the mouse and, always, the tab that has focus. */
 .row:hover .label, .row.active .label { color: #c9b184; }
-.row.active { background: rgba(183,157,112,.14); }
-.row.active .label { font-weight: 600; }
+/* A stronger tint plus a left accent bar (padding trimmed to match, so content doesn't shift)
+   gives the focused row a defined edge instead of just a faint wash. */
+.row.active { background: rgba(183,157,112,.28); border-left: 2px solid #b79d70; padding-left: 4px; }
+.row.active:hover { background: rgba(183,157,112,.36); }
+/* The focused tab's title is bolder and brighter than a plain hover, so it still reads as
+   "this one" even once the mouse has moved off it. */
+.row.active .label { color: #e8d9b8; font-weight: 700; }
 /* The focused tab's close button stays visible without a hover; other rows still need one. */
 .row.active .cx { opacity: .82; }
 .row.active:hover .cx { opacity: 1; }
@@ -262,7 +310,7 @@ body.panel .footer { background: var(--vscode-editor-background); }
 .ghead { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px; cursor: pointer; background: color-mix(in srgb, var(--gc, #b79d70) 15%, transparent); }
 .ghead:hover, .ghead.dragover { background: color-mix(in srgb, var(--gc, #b79d70) 26%, transparent); }
 .ghead.dragover { outline: 1.5px dashed var(--gc, #b79d70); outline-offset: -2px; }
-.gchev { flex: none; width: 11px; font-size: 9px; color: var(--vscode-descriptionForeground); }
+.gchev { flex: none; width: 14px; font-size: 13px; line-height: 1; color: var(--vscode-descriptionForeground); }
 .gdot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--gc, #b79d70); cursor: pointer; }
 .gname { flex: 1; min-width: 0; font-size: 12px; font-weight: 700; color: var(--gc, #b79d70); outline: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gname:focus { background: var(--vscode-input-background); border-radius: 3px; padding: 0 3px; box-shadow: 0 0 0 1px var(--gc, #b79d70); }
@@ -273,6 +321,19 @@ body.panel .footer { background: var(--vscode-editor-background); }
 .swatches { position: fixed; z-index: 50; display: flex; gap: 6px; padding: 7px; border-radius: 7px; background: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-editorHoverWidget-border, rgba(128,128,128,.35)); box-shadow: 0 2px 10px rgba(0,0,0,.4); }
 .swatch { width: 17px; height: 17px; border-radius: 50%; cursor: pointer; border: 1.5px solid rgba(128,128,128,.35); }
 .swatch:hover { transform: scale(1.18); }
+/* Parked: a fixed slide-up shelf above the relay lanes, not a colored tab-group folder —
+   plain gold-outline chrome to match the drawer/lane look instead. */
+.parkwrap { margin: 4px 6px 0; }
+.parkhead { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 7px; cursor: pointer; background: rgba(183,157,112,.09); border: 1px solid rgba(183,157,112,.4); }
+.parkhead:hover, .parkhead.dragover { background: rgba(183,157,112,.2); }
+.parkhead.dragover { outline: 1.5px dashed #b79d70; outline-offset: -2px; }
+.parkchev { flex: none; width: 14px; font-size: 13px; line-height: 1; color: #b79d70; }
+.parktitle { flex: 1; font-size: 11px; font-weight: 700; color: #b79d70; text-transform: uppercase; letter-spacing: .05em; }
+.parkcount { flex: none; font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+.parkdrawer { max-height: 0; opacity: 0; overflow: hidden; margin: 0 1px; border-radius: 0 0 7px 7px; transition: max-height .26s ease, opacity .2s ease; }
+.parkdrawer.open { max-height: 240px; opacity: 1; overflow: auto; border: 1px solid rgba(183,157,112,.4); border-top: 0; background: var(--vscode-sideBar-background); padding: 2px 0; }
+body.panel .parkdrawer.open { background: var(--vscode-editor-background); }
+.parkempty { padding: 6px 8px; font-size: 11px; font-style: italic; color: var(--vscode-descriptionForeground); }
 `;
 
 // Runs inside the webview: no template literals here (this whole script is itself one).
@@ -282,17 +343,45 @@ const state = vscode.getState() || { openLane: null };
 let current = { rows: [], lanes: [], problems: [] };
 let shownLane = null;
 let activeSwatchPop = null;
+// Groups/order/parked live in each webview's own vscode.setState by default, so the sidebar
+// and a popped-out panel would otherwise drift apart. These two flags make exactly one surface
+// (whichever renders first) hand its restored layout to the extension host as ground truth,
+// and every later mutation re-broadcasts so any other open surface stays a mirror, not a fork.
+let receivedLayoutSync = false;
+let pushedInitialLayout = false;
 const root = document.getElementById('root');
-const GROUP_COLORS = ['#5f6368', '#1a73e8', '#d93025', '#f9ab00', '#188038', '#d01884', '#8430ce', '#007b83'];
+// Dusty, low-chroma tones in the same warm-gold family as the rest of the board, instead of
+// Chrome's vivid tab colors — folders shouldn't be the brightest thing on screen.
+const GROUP_COLORS = ['#71717a', '#6e88a6', '#a3706b', '#b3925f', '#6f9179', '#a06e8c', '#8779a3', '#5f8f92'];
+// Old vivid palette, kept only so any group colored before this change repaints itself in the
+// new muted palette (same index) instead of staying stuck on the bright original.
+const OLD_GROUP_COLORS = ['#5f6368', '#1a73e8', '#d93025', '#f9ab00', '#188038', '#d01884', '#8430ce', '#007b83'];
 const LANE = ['1\\uFE0F\\u20E3', '2\\uFE0F\\u20E3', '3\\uFE0F\\u20E3', '4\\uFE0F\\u20E3', '5\\uFE0F\\u20E3'];
 window.addEventListener('message', function (e) {
   if (!e.data) return;
   if (e.data.type === 'snapshot') render(e.data.snapshot);
   if (e.data.type === 'showDoctor') { state.showDoctor = true; state.showKeys = false; state.openLane = null; vscode.setState(state); render(current); }
+  if (e.data.type === 'layoutSync') {
+    receivedLayoutSync = true;
+    const L = e.data.layout || {};
+    state.topOrder = L.topOrder || [];
+    state.groups = L.groups || [];
+    state.groupMembers = L.groupMembers || {};
+    state.groupOf = L.groupOf || {};
+    state.collapsed = L.collapsed || {};
+    state.parked = L.parked || [];
+    vscode.setState(state);
+    render(current);
+  }
 });
 vscode.postMessage({ type: 'ready' });
 
 function send(msg) { vscode.postMessage(msg); }
+// Hands the groups/order/parked slice of state to the extension host, which caches it and
+// mirrors it to every other open surface (sidebar + popped-out panel).
+function pushLayout() {
+  send({ type: 'layout', layout: { topOrder: state.topOrder, groups: state.groups, groupMembers: state.groupMembers, groupOf: state.groupOf, collapsed: state.collapsed, parked: state.parked } });
+}
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
 function svg(markup) { const w = document.createElement('div'); w.innerHTML = markup; return w.firstElementChild; }
 function laneMark(n) { return LANE[n - 1] || ('#' + n); }
@@ -555,9 +644,48 @@ function iconButton(markup, title, on, onclick) {
   b.appendChild(svg(markup)); b.setAttribute('data-tip', title); b.onclick = onclick;
   return b;
 }
+// Parked: a fixed shelf pinned above the relay lanes, not one of the drag-anywhere tab-group
+// folders — a single click slides it open, and any row (not a group) can be dragged onto the
+// header or into the open shelf to park it; dragging a parked row onto the main list unparks it.
+function parkedSection(s) {
+  const byKey = new Map(s.rows.map(function (r) { return [r.key, r]; }));
+  const keys = state.parked.filter(function (k) { return byKey.has(k); });
+  const wrap = el('div', 'parkwrap');
+  const head = el('div', 'parkhead');
+  head.appendChild(el('span', 'parkchev', state.parkedOpen ? '\\u25BE' : '\\u25B8'));
+  head.appendChild(el('span', 'parktitle', 'Parked'));
+  head.appendChild(el('span', 'parkcount', String(keys.length)));
+  head.onclick = function () { state.parkedOpen = !state.parkedOpen; vscode.setState(state); render(current); };
+  head.ondragover = function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; head.classList.add('dragover'); };
+  head.ondragleave = function () { head.classList.remove('dragover'); };
+  head.ondrop = function (e) {
+    e.preventDefault(); e.stopPropagation(); head.classList.remove('dragover');
+    const srcKey = e.dataTransfer.getData('text/plain');
+    if (srcKey) parkRow(srcKey);
+  };
+  wrap.appendChild(head);
+  const box = el('div', 'parkdrawer' + (state.parkedOpen ? ' open' : ''));
+  box.ondragover = function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+  box.ondrop = function (e) {
+    e.preventDefault();
+    const srcKey = e.dataTransfer.getData('text/plain');
+    if (srcKey) parkRow(srcKey);
+  };
+  if (!keys.length) box.appendChild(el('div', 'parkempty', 'drag a tab here to park it'));
+  keys.forEach(function (k) {
+    const r = byKey.get(k);
+    if (!r) return;
+    const rw = row(r);
+    makeDraggable(rw, r.key, dropOnParkedRow);
+    box.appendChild(rw);
+  });
+  wrap.appendChild(box);
+  return wrap;
+}
 function footer(s) {
   const bar = el('div', 'footer');
   bar.appendChild(drawer(s));
+  bar.appendChild(parkedSection(s));
   // Relay lanes are opt-in (claudeQueueRelay.relayLanes) — no lanes configured, no lane strip clutter.
   // The keys/check-up drawer above still opens from the tools row regardless.
   if (s.lanes.length) bar.appendChild(laneBar(s));
@@ -625,16 +753,41 @@ function syncLayout(rows) {
   state.groupMembers = state.groupMembers || {};
   state.groupOf = state.groupOf || {};
   state.collapsed = state.collapsed || {};
+  state.parked = state.parked || [];
+  // Repaint any group still on the old vivid palette (matched by index) onto the new muted one.
+  state.groups.forEach(function (g) {
+    const i = OLD_GROUP_COLORS.indexOf(g.color);
+    if (i >= 0) g.color = GROUP_COLORS[i];
+  });
+  // One-time migration: a group literally named "Parked" becomes the built-in Parked shelf.
+  if (!state.parkedMigrated) {
+    state.parkedMigrated = true;
+    const legacy = state.groups.filter(function (g) { return (g.name || '').trim().toLowerCase() === 'parked'; });
+    if (legacy.length) {
+      const legacyIds = new Set(legacy.map(function (g) { return g.id; }));
+      legacy.forEach(function (g) {
+        (state.groupMembers[g.id] || []).forEach(function (k) {
+          if (state.parked.indexOf(k) < 0) state.parked.push(k);
+          delete state.groupOf[k];
+        });
+        delete state.groupMembers[g.id];
+      });
+      state.groups = state.groups.filter(function (g) { return !legacyIds.has(g.id); });
+      state.topOrder = state.topOrder.filter(function (id) { return !(id.indexOf('grp:') === 0 && legacyIds.has(id.slice(4))); });
+    }
+  }
   const live = new Set(rows.map(function (r) { return r.key; }));
   state.groups.forEach(function (g) {
     state.groupMembers[g.id] = (state.groupMembers[g.id] || []).filter(function (k) { return live.has(k); });
   });
   Object.keys(state.groupOf).forEach(function (k) { if (!live.has(k)) delete state.groupOf[k]; });
+  state.parked = state.parked.filter(function (k) { return live.has(k); });
+  const parkedSet = new Set(state.parked);
   const groupIds = new Set(state.groups.map(function (g) { return 'grp:' + g.id; }));
   state.topOrder = state.topOrder.filter(function (id) {
-    return id.indexOf('grp:') === 0 ? groupIds.has(id) : live.has(id) && !state.groupOf[id];
+    return id.indexOf('grp:') === 0 ? groupIds.has(id) : live.has(id) && !state.groupOf[id] && !parkedSet.has(id);
   });
-  const placed = new Set(state.topOrder);
+  const placed = new Set(state.topOrder.concat(state.parked));
   rows.forEach(function (r) {
     if (!placed.has(r.key) && !state.groupOf[r.key]) { state.topOrder.push(r.key); placed.add(r.key); }
   });
@@ -642,11 +795,26 @@ function syncLayout(rows) {
 }
 function removeFromEverywhere(key) {
   state.topOrder = state.topOrder.filter(function (x) { return x !== key; });
+  state.parked = (state.parked || []).filter(function (x) { return x !== key; });
   const gid = state.groupOf[key];
   if (gid) {
     state.groupMembers[gid] = (state.groupMembers[gid] || []).filter(function (x) { return x !== key; });
     delete state.groupOf[key];
   }
+}
+function parkRow(key) {
+  if (key.indexOf('grp:') === 0) return;
+  removeFromEverywhere(key);
+  state.parked.push(key);
+  state.parkedOpen = true;
+  vscode.setState(state); pushLayout(); render(current);
+}
+function dropOnParkedRow(srcKey, targetKey) {
+  if (srcKey.indexOf('grp:') === 0) return;
+  removeFromEverywhere(srcKey);
+  let idx = state.parked.indexOf(targetKey); if (idx < 0) idx = state.parked.length;
+  state.parked.splice(idx, 0, srcKey);
+  vscode.setState(state); pushLayout(); render(current);
 }
 function dropOnRow(srcKey, targetKey) {
   const isGroupSrc = srcKey.indexOf('grp:') === 0;
@@ -663,7 +831,7 @@ function dropOnRow(srcKey, targetKey) {
     let idx = arr.indexOf(targetKey); if (idx < 0) idx = arr.length;
     arr.splice(idx, 0, srcKey);
   }
-  vscode.setState(state); render(current);
+  vscode.setState(state); pushLayout(); render(current);
 }
 function dropOnGroupHeader(srcKey, gid) {
   if (srcKey.indexOf('grp:') === 0) return; // groups can't join another group
@@ -671,12 +839,12 @@ function dropOnGroupHeader(srcKey, gid) {
   state.groupMembers[gid] = state.groupMembers[gid] || [];
   state.groupMembers[gid].push(srcKey);
   state.groupOf[srcKey] = gid;
-  vscode.setState(state); render(current);
+  vscode.setState(state); pushLayout(); render(current);
 }
 function dropAtEnd(srcKey) {
   removeFromEverywhere(srcKey);
   state.topOrder.push(srcKey);
-  vscode.setState(state); render(current);
+  vscode.setState(state); pushLayout(); render(current);
 }
 function makeDraggable(node, key, onDropFn) {
   node.draggable = true;
@@ -685,7 +853,7 @@ function makeDraggable(node, key, onDropFn) {
   node.ondragover = function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; node.classList.add('dragover'); };
   node.ondragleave = function () { node.classList.remove('dragover'); };
   node.ondrop = function (e) {
-    e.preventDefault(); node.classList.remove('dragover');
+    e.preventDefault(); e.stopPropagation(); node.classList.remove('dragover');
     const srcKey = e.dataTransfer.getData('text/plain');
     if (!srcKey || srcKey === key) return;
     (onDropFn || dropOnRow)(srcKey, key);
@@ -697,7 +865,7 @@ function openColorPicker(g, anchor) {
   const pop = el('div', 'swatches');
   GROUP_COLORS.forEach(function (c) {
     const sw = el('span', 'swatch'); sw.style.background = c;
-    sw.onclick = function (e) { e.stopPropagation(); g.color = c; vscode.setState(state); closeColorPicker(); render(current); };
+    sw.onclick = function (e) { e.stopPropagation(); g.color = c; vscode.setState(state); pushLayout(); closeColorPicker(); render(current); };
     pop.appendChild(sw);
   });
   document.body.appendChild(pop);
@@ -717,7 +885,7 @@ function groupToolbar() {
     state.groups.push({ id: id, name: 'New Group', color: GROUP_COLORS[state.groups.length % GROUP_COLORS.length] });
     state.groupMembers[id] = [];
     state.topOrder.unshift('grp:' + id);
-    vscode.setState(state); render(current);
+    vscode.setState(state); pushLayout(); render(current);
   };
   bar.appendChild(btn);
   return bar;
@@ -734,7 +902,7 @@ function groupHeader(g, memberCount) {
   const name = el('span', 'gname', g.name);
   name.contentEditable = 'true'; name.spellcheck = false;
   name.onclick = function (e) { e.stopPropagation(); };
-  name.onblur = function () { g.name = name.textContent.trim() || 'New Group'; name.textContent = g.name; vscode.setState(state); };
+  name.onblur = function () { g.name = name.textContent.trim() || 'New Group'; name.textContent = g.name; vscode.setState(state); pushLayout(); };
   name.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } };
   head.appendChild(name);
   head.appendChild(el('span', 'gcount', String(memberCount)));
@@ -746,10 +914,10 @@ function groupHeader(g, memberCount) {
     state.groups = state.groups.filter(function (x) { return x.id !== g.id; });
     delete state.groupMembers[g.id];
     state.topOrder = state.topOrder.filter(function (x) { return x !== 'grp:' + g.id; });
-    vscode.setState(state); render(current);
+    vscode.setState(state); pushLayout(); render(current);
   };
   head.appendChild(del);
-  head.onclick = function () { state.collapsed[g.id] = !collapsed; vscode.setState(state); render(current); };
+  head.onclick = function () { state.collapsed[g.id] = !collapsed; vscode.setState(state); pushLayout(); render(current); };
   makeDraggable(head, 'grp:' + g.id, function (srcKey) {
     if (srcKey.indexOf('grp:') === 0) dropOnRow(srcKey, 'grp:' + g.id);
     else dropOnGroupHeader(srcKey, g.id);
@@ -796,6 +964,10 @@ function render(s) {
   frag.appendChild(dz);
   frag.appendChild(footer(s));
   root.replaceChildren(frag);
+  // First surface to render this session hands its restored layout to the host as ground
+  // truth, so a surface opening later (e.g. popping the board out) starts already matching it
+  // instead of showing its own stale, separately-persisted groups/order/parked.
+  if (!pushedInitialLayout && !receivedLayoutSync) { pushedInitialLayout = true; pushLayout(); }
 }
 `;
 

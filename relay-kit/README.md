@@ -81,7 +81,7 @@ Cowork reads that folder's `CLAUDE.md` and knows the contract from there.
 Code sessions to know how to pick a lane, write a well-formed task, and ingest a
 result on their own (rather than you hand-writing `inbound.md` yourself), give them
 a project skill describing that loop — lane-balancing, the handover file format
-above, and "when Alex says 'check the relay', read `receipts.sh`." Claude Queue
+above, and "when you say 'check the relay', read `receipts.sh`." Claude Queue
 Relay doesn't ship that skill (it's a Claude Code project convention, not an
 extension feature) — write your own short one from the loop described above, or
 adapt the version this project was built against (search the extension's own

@@ -1,14 +1,13 @@
 {
-  "name": "claude-tab-queue",
-  "displayName": "Claude Tab Queue",
-  "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, one board (sidebar or pop-out) with lane-aware tabs, relay lanes that open in Cowork with a check-up that fixes stuck or orphaned tasks, peek / sweep / snooze, and Claude usage rings.",
-  "version": "0.4.14",
+  "name": "claude-queue-relay",
+  "displayName": "Claude Queue Relay",
+  "description": "A queue for many Claude Code tabs: pings and pins a tab when it finishes or needs you, drag-to-reorder rows with Chrome-style color-coded groups, one board (sidebar or pop-out), optional relay lanes that hand tasks to Claude Cowork with a check-up that fixes stuck or orphaned tasks, peek / sweep / snooze, and Claude usage rings.",
+  "version": "1.0.0",
   "publisher": "alex-holtzman",
-  "license": "SEE LICENSE IN LICENSE",
-  "private": true,
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/handmade-kapamilya/claude-tab-queue"
+    "url": "https://github.com/handmade-kapamilya/claude-queue-relay"
   },
   "engines": {
     "vscode": "^1.100.0"
@@ -23,133 +22,138 @@
   "contributes": {
     "commands": [
       {
-        "command": "claudeTabQueue.showQueue",
+        "command": "claudeQueueRelay.showQueue",
         "title": "Show Queue",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.goToSession",
+        "command": "claudeQueueRelay.goToSession",
         "title": "Go To Session",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.openLane",
+        "command": "claudeQueueRelay.openLane",
         "title": "Open Relay Lane",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.goToTab",
+        "command": "claudeQueueRelay.goToTab",
         "title": "Go To Tab",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.openLaneFile",
+        "command": "claudeQueueRelay.openLaneFile",
         "title": "Open Relay Lane File",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.installHooks",
+        "command": "claudeQueueRelay.installHooks",
         "title": "Install Claude Code Hooks",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.clear",
+        "command": "claudeQueueRelay.setupRelayLanes",
+        "title": "Set Up Relay Lanes",
+        "category": "Claude Queue Relay"
+      },
+      {
+        "command": "claudeQueueRelay.clear",
         "title": "Mark All Seen",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(check-all)"
       },
       {
-        "command": "claudeTabQueue.refresh",
+        "command": "claudeQueueRelay.refresh",
         "title": "Refresh",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeTabQueue.openLog",
+        "command": "claudeQueueRelay.openLog",
         "title": "Open Log",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.openCowork",
+        "command": "claudeQueueRelay.openCowork",
         "title": "Open Relay Lane in Cowork",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.popOut",
+        "command": "claudeQueueRelay.popOut",
         "title": "Pop Out Board",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(link-external)"
       },
       {
-        "command": "claudeTabQueue.next",
+        "command": "claudeQueueRelay.next",
         "title": "Go To What Needs You Next",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.jump",
+        "command": "claudeQueueRelay.jump",
         "title": "Jump To Tab or Lane",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.toggleQuiet",
+        "command": "claudeQueueRelay.toggleQuiet",
         "title": "Toggle Mute",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(bell-slash)"
       },
       {
-        "command": "claudeTabQueue.toggleSound",
+        "command": "claudeQueueRelay.toggleSound",
         "title": "Toggle Sound",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(unmute)"
       },
       {
-        "command": "claudeTabQueue.toggleToast",
+        "command": "claudeQueueRelay.toggleToast",
         "title": "Toggle Toast Notifications",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(bell)"
       },
       {
-        "command": "claudeTabQueue.peek",
+        "command": "claudeQueueRelay.peek",
         "title": "Peek At What Finished Tabs Said",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.sweep",
+        "command": "claudeQueueRelay.sweep",
         "title": "Sweep Done Tabs",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(clear-all)"
       },
       {
-        "command": "claudeTabQueue.snooze",
+        "command": "claudeQueueRelay.snooze",
         "title": "Snooze Tab",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       },
       {
-        "command": "claudeTabQueue.doctor",
+        "command": "claudeQueueRelay.doctor",
         "title": "Lane Check-Up",
-        "category": "Claude Tab Queue",
+        "category": "Claude Queue Relay",
         "icon": "$(pulse)"
       },
       {
-        "command": "claudeTabQueue.dismissLaneTask",
+        "command": "claudeQueueRelay.dismissLaneTask",
         "title": "Dismiss Relay Lane Task",
-        "category": "Claude Tab Queue"
+        "category": "Claude Queue Relay"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "claudeTabQueue",
+          "id": "claudeQueueRelay",
           "title": "Claude Queue",
           "icon": "media/queue.svg"
         }
       ]
     },
     "views": {
-      "claudeTabQueue": [
+      "claudeQueueRelay": [
         {
           "type": "webview",
-          "id": "claudeTabQueue.board",
+          "id": "claudeQueueRelay.board",
           "name": "Queue"
         }
       ]
@@ -157,31 +161,31 @@
     "menus": {
       "view/title": [
         {
-          "command": "claudeTabQueue.popOut",
-          "when": "view == claudeTabQueue.board",
+          "command": "claudeQueueRelay.popOut",
+          "when": "view == claudeQueueRelay.board",
           "group": "navigation@1"
         },
         {
-          "command": "claudeTabQueue.toggleQuiet",
-          "when": "view == claudeTabQueue.board",
+          "command": "claudeQueueRelay.toggleQuiet",
+          "when": "view == claudeQueueRelay.board",
           "group": "navigation@2"
         },
         {
-          "command": "claudeTabQueue.clear",
-          "when": "view == claudeTabQueue.board",
+          "command": "claudeQueueRelay.clear",
+          "when": "view == claudeQueueRelay.board",
           "group": "navigation@3"
         },
         {
-          "command": "claudeTabQueue.refresh",
-          "when": "view == claudeTabQueue.board",
+          "command": "claudeQueueRelay.refresh",
+          "when": "view == claudeQueueRelay.board",
           "group": "navigation@4"
         }
       ]
     },
     "configuration": {
-      "title": "Claude Tab Queue",
+      "title": "Claude Queue Relay",
       "properties": {
-        "claudeTabQueue.pinMode": {
+        "claudeQueueRelay.pinMode": {
           "type": "string",
           "enum": [
             "immediate",
@@ -191,44 +195,40 @@
           "default": "off",
           "description": "When a session finishes or needs input, pin its tab to the front of the tab bar: right away, the next time you switch tabs, or never."
         },
-        "claudeTabQueue.pinnedRow": {
+        "claudeQueueRelay.pinnedRow": {
           "type": "boolean",
           "default": false,
           "description": "On first run, turn on workbench.editor.pinnedTabsOnSeparateRow so queued (pinned) tabs get their own row at the top."
         },
-        "claudeTabQueue.sound": {
+        "claudeQueueRelay.sound": {
           "type": "boolean",
           "default": true,
           "description": "Play a system sound when a session finishes, needs input, or a relay lane lands."
         },
-        "claudeTabQueue.macNotification": {
+        "claudeQueueRelay.macNotification": {
           "type": "boolean",
           "default": true,
           "description": "Show a macOS notification (via osascript) in addition to the in-window toast."
         },
-        "claudeTabQueue.toast": {
+        "claudeQueueRelay.toast": {
           "type": "boolean",
           "default": true,
           "description": "Show an in-window toast with a Go to tab button."
         },
-        "claudeTabQueue.markUnread": {
+        "claudeQueueRelay.markUnread": {
           "type": "boolean",
           "default": false,
           "description": "Also mark the finished session tab unread (orange dot) using Claude Code's own command."
         },
-        "claudeTabQueue.relayLanes": {
+        "claudeQueueRelay.relayLanes": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            "~/Documents/hk-relay",
-            "~/Documents/hk-relay-2",
-            "~/Documents/hk-relay-3"
-          ],
-          "description": "Relay lane folders to watch (each must contain relay/outbound.md)."
+          "default": [],
+          "description": "Optional: relay lane folders to watch (each must contain relay/outbound.md). Off by default — run \"Claude Queue Relay: Set Up Relay Lanes\" to scaffold your own, or see relay-kit/README.md."
         },
-        "claudeTabQueue.extraRoots": {
+        "claudeQueueRelay.extraRoots": {
           "type": "array",
           "items": {
             "type": "string"
@@ -240,27 +240,27 @@
     },
     "keybindings": [
       {
-        "command": "claudeTabQueue.next",
+        "command": "claudeQueueRelay.next",
         "key": "ctrl+cmd+u",
         "mac": "ctrl+cmd+u"
       },
       {
-        "command": "claudeTabQueue.jump",
+        "command": "claudeQueueRelay.jump",
         "key": "ctrl+cmd+j",
         "mac": "ctrl+cmd+j"
       },
       {
-        "command": "claudeTabQueue.toggleQuiet",
+        "command": "claudeQueueRelay.toggleQuiet",
         "key": "shift+alt+cmd+j",
         "mac": "shift+alt+cmd+j"
       },
       {
-        "command": "claudeTabQueue.peek",
+        "command": "claudeQueueRelay.peek",
         "key": "ctrl+cmd+.",
         "mac": "ctrl+cmd+."
       },
       {
-        "command": "claudeTabQueue.sweep",
+        "command": "claudeQueueRelay.sweep",
         "key": "ctrl+cmd+backspace",
         "mac": "ctrl+cmd+backspace"
       }

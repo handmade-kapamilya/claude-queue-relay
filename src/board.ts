@@ -111,7 +111,7 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
       this.panel.reveal();
       return false;
     }
-    const panel = vscode.window.createWebviewPanel('claudeTabQueue.board', 'Claude Queue', vscode.ViewColumn.Active, {
+    const panel = vscode.window.createWebviewPanel('claudeQueueRelay.board', 'Claude Queue', vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
     });
@@ -152,7 +152,11 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .row:hover { background: var(--vscode-list-hoverBackground); }
 /* Bright gold text marks the row under the mouse and, always, the tab that has focus. */
 .row:hover .label, .row.active .label { color: #c9b184; }
+.row.active { background: rgba(183,157,112,.14); }
 .row.active .label { font-weight: 600; }
+/* The focused tab's close button stays visible without a hover; other rows still need one. */
+.row.active .cx { opacity: .82; }
+.row.active:hover .cx { opacity: 1; }
 .icon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; font-size: 12px; }
 .label { flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta { flex: none; max-width: 48%; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -246,6 +250,29 @@ body.panel .footer { background: var(--vscode-editor-background); }
 [data-tip]:hover::after { opacity: 1; transform: none; }
 .ib:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-foreground); }
 .ib.on { color: #b79d70; background: rgba(183, 157, 112, .18); }
+/* Drag-to-reorder rows and groups. */
+.row.dragging { opacity: .35; }
+.row.dragover { outline: 1.5px dashed #b79d70; outline-offset: -2px; }
+.dropend { height: 8px; margin: 2px 4px; border-radius: 5px; }
+.dropend.dragover { height: 20px; border: 1.5px dashed #b79d70; background: rgba(183,157,112,.08); }
+/* Tab groups: a Chrome-style colored section with an editable name and a color swatch. */
+.grouptoolbar { display: flex; justify-content: flex-end; padding: 0 4px 4px; }
+.gsection { margin: 5px 0 2px; border-left: 2px solid var(--gc, #b79d70); border-radius: 0 0 0 3px; }
+.gsection .row { margin-left: 5px; }
+.ghead { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px; cursor: pointer; background: color-mix(in srgb, var(--gc, #b79d70) 15%, transparent); }
+.ghead:hover, .ghead.dragover { background: color-mix(in srgb, var(--gc, #b79d70) 26%, transparent); }
+.ghead.dragover { outline: 1.5px dashed var(--gc, #b79d70); outline-offset: -2px; }
+.gchev { flex: none; width: 11px; font-size: 9px; color: var(--vscode-descriptionForeground); }
+.gdot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--gc, #b79d70); cursor: pointer; }
+.gname { flex: 1; min-width: 0; font-size: 12px; font-weight: 700; color: var(--gc, #b79d70); outline: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gname:focus { background: var(--vscode-input-background); border-radius: 3px; padding: 0 3px; box-shadow: 0 0 0 1px var(--gc, #b79d70); }
+.gcount { flex: none; font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+.gdel { flex: none; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0; }
+.ghead:hover .gdel { opacity: .7; }
+.gdel:hover { opacity: 1 !important; background: rgba(128,128,128,.25); }
+.swatches { position: fixed; z-index: 50; display: flex; gap: 6px; padding: 7px; border-radius: 7px; background: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-editorHoverWidget-border, rgba(128,128,128,.35)); box-shadow: 0 2px 10px rgba(0,0,0,.4); }
+.swatch { width: 17px; height: 17px; border-radius: 50%; cursor: pointer; border: 1.5px solid rgba(128,128,128,.35); }
+.swatch:hover { transform: scale(1.18); }
 `;
 
 // Runs inside the webview: no template literals here (this whole script is itself one).
@@ -254,7 +281,9 @@ const vscode = acquireVsCodeApi();
 const state = vscode.getState() || { openLane: null };
 let current = { rows: [], lanes: [], problems: [] };
 let shownLane = null;
+let activeSwatchPop = null;
 const root = document.getElementById('root');
+const GROUP_COLORS = ['#5f6368', '#1a73e8', '#d93025', '#f9ab00', '#188038', '#d01884', '#8430ce', '#007b83'];
 const LANE = ['1\\uFE0F\\u20E3', '2\\uFE0F\\u20E3', '3\\uFE0F\\u20E3', '4\\uFE0F\\u20E3', '5\\uFE0F\\u20E3'];
 window.addEventListener('message', function (e) {
   if (!e.data) return;
@@ -529,7 +558,9 @@ function iconButton(markup, title, on, onclick) {
 function footer(s) {
   const bar = el('div', 'footer');
   bar.appendChild(drawer(s));
-  bar.appendChild(laneBar(s));
+  // Relay lanes are opt-in (claudeQueueRelay.relayLanes) — no lanes configured, no lane strip clutter.
+  // The keys/check-up drawer above still opens from the tools row regardless.
+  if (s.lanes.length) bar.appendChild(laneBar(s));
   const strip = el('div', 'strip');
   const all = s.usage && s.usage.meters ? s.usage.meters : [];
   const five = all.find(function (m) { return m.label === '5h'; });
@@ -585,11 +616,184 @@ function footer(s) {
   }
   return bar;
 }
+const NEWGROUP = SVG + '<rect x="2" y="4.5" width="12" height="8" rx="1.8"/><path d="M8 6.8v3.4M6.3 8.5h3.4"/></svg>';
+// Layout state lives in vscode.setState (same durable store as openLane etc.), not in the
+// server snapshot: reordering and grouping are a client-only view over the same rows.
+function syncLayout(rows) {
+  state.topOrder = state.topOrder || [];
+  state.groups = state.groups || [];
+  state.groupMembers = state.groupMembers || {};
+  state.groupOf = state.groupOf || {};
+  state.collapsed = state.collapsed || {};
+  const live = new Set(rows.map(function (r) { return r.key; }));
+  state.groups.forEach(function (g) {
+    state.groupMembers[g.id] = (state.groupMembers[g.id] || []).filter(function (k) { return live.has(k); });
+  });
+  Object.keys(state.groupOf).forEach(function (k) { if (!live.has(k)) delete state.groupOf[k]; });
+  const groupIds = new Set(state.groups.map(function (g) { return 'grp:' + g.id; }));
+  state.topOrder = state.topOrder.filter(function (id) {
+    return id.indexOf('grp:') === 0 ? groupIds.has(id) : live.has(id) && !state.groupOf[id];
+  });
+  const placed = new Set(state.topOrder);
+  rows.forEach(function (r) {
+    if (!placed.has(r.key) && !state.groupOf[r.key]) { state.topOrder.push(r.key); placed.add(r.key); }
+  });
+  vscode.setState(state);
+}
+function removeFromEverywhere(key) {
+  state.topOrder = state.topOrder.filter(function (x) { return x !== key; });
+  const gid = state.groupOf[key];
+  if (gid) {
+    state.groupMembers[gid] = (state.groupMembers[gid] || []).filter(function (x) { return x !== key; });
+    delete state.groupOf[key];
+  }
+}
+function dropOnRow(srcKey, targetKey) {
+  const isGroupSrc = srcKey.indexOf('grp:') === 0;
+  const targetGroup = state.groupOf[targetKey];
+  if (isGroupSrc && targetGroup) return; // groups can't nest inside a group
+  removeFromEverywhere(srcKey);
+  if (targetGroup && !isGroupSrc) {
+    const arr = state.groupMembers[targetGroup] = state.groupMembers[targetGroup] || [];
+    let idx = arr.indexOf(targetKey); if (idx < 0) idx = arr.length;
+    arr.splice(idx, 0, srcKey);
+    state.groupOf[srcKey] = targetGroup;
+  } else {
+    const arr = state.topOrder;
+    let idx = arr.indexOf(targetKey); if (idx < 0) idx = arr.length;
+    arr.splice(idx, 0, srcKey);
+  }
+  vscode.setState(state); render(current);
+}
+function dropOnGroupHeader(srcKey, gid) {
+  if (srcKey.indexOf('grp:') === 0) return; // groups can't join another group
+  removeFromEverywhere(srcKey);
+  state.groupMembers[gid] = state.groupMembers[gid] || [];
+  state.groupMembers[gid].push(srcKey);
+  state.groupOf[srcKey] = gid;
+  vscode.setState(state); render(current);
+}
+function dropAtEnd(srcKey) {
+  removeFromEverywhere(srcKey);
+  state.topOrder.push(srcKey);
+  vscode.setState(state); render(current);
+}
+function makeDraggable(node, key, onDropFn) {
+  node.draggable = true;
+  node.ondragstart = function (e) { e.dataTransfer.setData('text/plain', key); e.dataTransfer.effectAllowed = 'move'; node.classList.add('dragging'); };
+  node.ondragend = function () { node.classList.remove('dragging'); };
+  node.ondragover = function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; node.classList.add('dragover'); };
+  node.ondragleave = function () { node.classList.remove('dragover'); };
+  node.ondrop = function (e) {
+    e.preventDefault(); node.classList.remove('dragover');
+    const srcKey = e.dataTransfer.getData('text/plain');
+    if (!srcKey || srcKey === key) return;
+    (onDropFn || dropOnRow)(srcKey, key);
+  };
+}
+function closeColorPicker() { if (activeSwatchPop) { activeSwatchPop.remove(); activeSwatchPop = null; } }
+function openColorPicker(g, anchor) {
+  closeColorPicker();
+  const pop = el('div', 'swatches');
+  GROUP_COLORS.forEach(function (c) {
+    const sw = el('span', 'swatch'); sw.style.background = c;
+    sw.onclick = function (e) { e.stopPropagation(); g.color = c; vscode.setState(state); closeColorPicker(); render(current); };
+    pop.appendChild(sw);
+  });
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(4, r.left) + 'px';
+  pop.style.top = (r.bottom + 4) + 'px';
+  activeSwatchPop = pop;
+  setTimeout(function () { document.addEventListener('click', closeColorPicker, { once: true }); }, 0);
+}
+function groupToolbar() {
+  const bar = el('div', 'grouptoolbar');
+  const btn = el('span', 'ib');
+  btn.appendChild(svg(NEWGROUP));
+  btn.setAttribute('data-tip', 'New tab group \\u2014 drag tabs onto it');
+  btn.onclick = function () {
+    const id = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    state.groups.push({ id: id, name: 'New Group', color: GROUP_COLORS[state.groups.length % GROUP_COLORS.length] });
+    state.groupMembers[id] = [];
+    state.topOrder.unshift('grp:' + id);
+    vscode.setState(state); render(current);
+  };
+  bar.appendChild(btn);
+  return bar;
+}
+function groupHeader(g, memberCount) {
+  const collapsed = !!state.collapsed[g.id];
+  const head = el('div', 'ghead' + (collapsed ? ' collapsed' : ''));
+  head.style.setProperty('--gc', g.color);
+  const chev = el('span', 'gchev', collapsed ? '\\u25B8' : '\\u25BE');
+  head.appendChild(chev);
+  const dot = el('span', 'gdot');
+  dot.onclick = function (e) { e.stopPropagation(); openColorPicker(g, dot); };
+  head.appendChild(dot);
+  const name = el('span', 'gname', g.name);
+  name.contentEditable = 'true'; name.spellcheck = false;
+  name.onclick = function (e) { e.stopPropagation(); };
+  name.onblur = function () { g.name = name.textContent.trim() || 'New Group'; name.textContent = g.name; vscode.setState(state); };
+  name.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } };
+  head.appendChild(name);
+  head.appendChild(el('span', 'gcount', String(memberCount)));
+  const del = el('span', 'gdel', '\\u2715');
+  del.title = 'Delete this group (tabs stay open, just ungrouped)';
+  del.onclick = function (e) {
+    e.stopPropagation();
+    (state.groupMembers[g.id] || []).slice().forEach(function (k) { delete state.groupOf[k]; state.topOrder.push(k); });
+    state.groups = state.groups.filter(function (x) { return x.id !== g.id; });
+    delete state.groupMembers[g.id];
+    state.topOrder = state.topOrder.filter(function (x) { return x !== 'grp:' + g.id; });
+    vscode.setState(state); render(current);
+  };
+  head.appendChild(del);
+  head.onclick = function () { state.collapsed[g.id] = !collapsed; vscode.setState(state); render(current); };
+  makeDraggable(head, 'grp:' + g.id, function (srcKey) {
+    if (srcKey.indexOf('grp:') === 0) dropOnRow(srcKey, 'grp:' + g.id);
+    else dropOnGroupHeader(srcKey, g.id);
+  });
+  return head;
+}
 function render(s) {
   current = s;
+  syncLayout(s.rows);
   const frag = document.createDocumentFragment();
   if (!s.rows.length) frag.appendChild(el('div', 'empty', 'no Claude tabs open here'));
-  s.rows.forEach(function (r) { frag.appendChild(row(r)); });
+  frag.appendChild(groupToolbar());
+  const byKey = new Map(s.rows.map(function (r) { return [r.key, r]; }));
+  state.topOrder.forEach(function (id) {
+    if (id.indexOf('grp:') === 0) {
+      const gid = id.slice(4);
+      const g = state.groups.find(function (x) { return x.id === gid; });
+      if (!g) return;
+      const memberKeys = state.groupMembers[gid] || [];
+      const members = memberKeys.map(function (k) { return byKey.get(k); }).filter(Boolean);
+      const section = el('div', 'gsection');
+      section.style.setProperty('--gc', g.color);
+      section.appendChild(groupHeader(g, members.length));
+      if (!state.collapsed[gid]) {
+        members.forEach(function (r) {
+          const rw = row(r);
+          makeDraggable(rw, r.key);
+          section.appendChild(rw);
+        });
+      }
+      frag.appendChild(section);
+    } else {
+      const r = byKey.get(id);
+      if (!r) return;
+      const rw = row(r);
+      makeDraggable(rw, r.key);
+      frag.appendChild(rw);
+    }
+  });
+  const dz = el('div', 'dropend');
+  dz.ondragover = function (e) { e.preventDefault(); dz.classList.add('dragover'); };
+  dz.ondragleave = function () { dz.classList.remove('dragover'); };
+  dz.ondrop = function (e) { e.preventDefault(); dz.classList.remove('dragover'); const k = e.dataTransfer.getData('text/plain'); if (k) dropAtEnd(k); };
+  frag.appendChild(dz);
   frag.appendChild(footer(s));
   root.replaceChildren(frag);
 }

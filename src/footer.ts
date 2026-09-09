@@ -8,8 +8,10 @@ export interface Signal {
   lane?: number;
 }
 
-// Alex's sessions end every message with a status footer (hk-ops CLAUDE.md):
-// ❌ failed · 💸 money gate · ⚠️ needs Alex · 1️⃣2️⃣3️⃣ awaiting a relay lane · 📂 file · ⏳ background · 🤙 done.
+// Tuned for a Claude Code session whose replies end with a status-footer convention:
+// ❌ failed · 💸 money gate · ⚠️ needs you · 1️⃣2️⃣3️⃣ awaiting a relay lane · 📂 file · ⏳ background · 🤙 done.
+// Not using that convention? These emoji just won't match, and rows fall back to plain text —
+// see README.md "Status footer" for how to adjust GATES/REST below to your own vocabulary.
 const GATES: Array<[string, SignalKind, string]> = [
   ['❌', 'failed', 'failed, needs you'],
   ['💸', 'money', 'money / irreversible gate'],

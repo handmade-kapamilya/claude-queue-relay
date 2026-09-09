@@ -58,7 +58,7 @@ const DEFER_GIVE_UP_MS = 10 * 60_000;
 const expandHome = (p: string) => p.replace(/^~(?=$|\/)/, HOME);
 const short = (id: string) => id.slice(0, 8);
 const run = (cmd: string, ...args: unknown[]) => vscode.commands.executeCommand(cmd, ...args);
-const setting = <T>(key: string, fallback: T) => vscode.workspace.getConfiguration('claudeTabQueue').get<T>(key, fallback);
+const setting = <T>(key: string, fallback: T) => vscode.workspace.getConfiguration('claudeQueueRelay').get<T>(key, fallback);
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const keycap = (n: number) => LANE_EMOJI[n - 1] ?? `#${n}`;
 
@@ -279,7 +279,7 @@ class TabQueue implements vscode.Disposable {
   private readonly registry = new SessionRegistry();
   private readonly relay: RelayWatcher;
   private readonly board = new Board((m) => this.onBoard(m));
-  private readonly status = vscode.window.createStatusBarItem('claudeTabQueue.status', vscode.StatusBarAlignment.Left, 50);
+  private readonly status = vscode.window.createStatusBarItem('claudeQueueRelay.status', vscode.StatusBarAlignment.Left, 50);
   private readonly pinnedByUs = new Set<string>();
   private readonly pendingPins = new Set<string>();
   private readonly deferred = new Map<string, Deferred>();
@@ -304,8 +304,8 @@ class TabQueue implements vscode.Disposable {
 
   constructor(private readonly log: Log) {
     this.relay = new RelayWatcher(settings.relayLanes, log);
-    this.status.name = 'Claude Tab Queue';
-    this.status.command = 'claudeTabQueue.next';
+    this.status.name = 'Claude Queue Relay';
+    this.status.command = 'claudeQueueRelay.next';
     this.status.show();
     this.loadQuiet();
     this.snoozeTimer = setInterval(() => this.snoozeTick(), 30_000);
@@ -313,7 +313,7 @@ class TabQueue implements vscode.Disposable {
       this.relay,
       this.status,
       this.board,
-      vscode.window.registerWebviewViewProvider('claudeTabQueue.board', this.board, { webviewOptions: { retainContextWhenHidden: true } }),
+      vscode.window.registerWebviewViewProvider('claudeQueueRelay.board', this.board, { webviewOptions: { retainContextWhenHidden: true } }),
       this.relay.onDidLand((lane) => {
         this.landed(lane);
         this.wakeForLane(lane.n);
@@ -322,7 +322,7 @@ class TabQueue implements vscode.Disposable {
         this.render();
         this.scheduleSync();
       }),
-      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeTabQueue') && this.render()),
+      vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeQueueRelay') && this.render()),
       vscode.window.tabGroups.onDidChangeTabs((e) => this.tabsChanged(e)),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.tabsChanged()),
       vscode.window.onDidChangeWindowState(() => {
@@ -634,7 +634,7 @@ class TabQueue implements vscode.Disposable {
   }
 
   private async updateSetting(key: string, value: boolean): Promise<void> {
-    await vscode.workspace.getConfiguration('claudeTabQueue').update(key, value, vscode.ConfigurationTarget.Global);
+    await vscode.workspace.getConfiguration('claudeQueueRelay').update(key, value, vscode.ConfigurationTarget.Global);
     this.log.info(`${key} ${value ? 'on' : 'off'}`);
     this.render();
   }
@@ -651,7 +651,7 @@ class TabQueue implements vscode.Disposable {
     if (!held.length) return;
     if (claim(`digest-${Date.now() >> 12}`)) this.ping(why, `${held.length} thing${held.length === 1 ? '' : 's'} landed while muted`, 'ready');
     const lines = held.slice(0, 3).map((a) => `${a.headline}: ${a.detail}`);
-    this.toast(`${why}: ${held.length} landed. ${lines.join(' · ')}`, 'Show queue', () => run('claudeTabQueue.board.focus'));
+    this.toast(`${why}: ${held.length} landed. ${lines.join(' · ')}`, 'Show queue', () => run('claudeQueueRelay.board.focus'));
   }
 
   // --- snooze --------------------------------------------------------------
@@ -976,7 +976,7 @@ class TabQueue implements vscode.Disposable {
   }
 
   showDoctor(): void {
-    void run('claudeTabQueue.board.focus');
+    void run('claudeQueueRelay.board.focus');
     this.board.post({ type: 'showDoctor' });
   }
 
@@ -1143,7 +1143,7 @@ class TabQueue implements vscode.Disposable {
       void vscode.window.showInformationMessage(`Lanes are as even as they can be (${loads}). Only queued tasks and a READY inbound move; running tasks and landed results stay put.`);
       return;
     }
-    void vscode.window.showInformationMessage(`Evened out the lanes: ${moved.join(' · ')} (now ${loads})`, 'Show queue').then((c) => c && run('claudeTabQueue.board.focus'));
+    void vscode.window.showInformationMessage(`Evened out the lanes: ${moved.join(' · ')} (now ${loads})`, 'Show queue').then((c) => c && run('claudeQueueRelay.board.focus'));
     this.render();
   }
 
@@ -1705,7 +1705,7 @@ class TabQueue implements vscode.Disposable {
     if (meters) this.status.text += `  $(pulse) ${meters}`;
     this.status.backgroundColor = urgent && !this.quiet ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
     const checkup = this.lastProblems.length ? `\n${this.lastProblems.length} thing(s) in the lane check-up.` : '';
-    this.status.tooltip = (first ? `${first.text}\nClick or ⌃⌘U: go there. ⌃⌘J: jump anywhere. ⌃⌘. peek.` : 'Claude Tab Queue') + checkup;
+    this.status.tooltip = (first ? `${first.text}\nClick or ⌃⌘U: go there. ⌃⌘J: jump anywhere. ⌃⌘. peek.` : 'Claude Queue Relay') + checkup;
   }
 
   async refreshUsage(): Promise<void> {
@@ -1813,19 +1813,54 @@ function installHooksInteractively(log: Log): void {
   try {
     const r = installHooks();
     const msg = r.added.length
-      ? `Claude Tab Queue: hooks added for ${r.added.join(', ')}. Backup: ${r.backup ?? 'none'}`
-      : 'Claude Tab Queue: hooks were already installed.';
+      ? `Claude Queue Relay: hooks added for ${r.added.join(', ')}. Backup: ${r.backup ?? 'none'}`
+      : 'Claude Queue Relay: hooks were already installed.';
     log.info(msg);
     void vscode.window.showInformationMessage(msg);
   } catch (err) {
-    void vscode.window.showErrorMessage(`Claude Tab Queue: hook install failed: ${err}`);
+    void vscode.window.showErrorMessage(`Claude Queue Relay: hook install failed: ${err}`);
   }
+}
+
+// Scaffolds N relay lane folders (relay-kit/setup.sh, bundled with the extension) and
+// offers to point claudeQueueRelay.relayLanes at them — the setup step relay lanes need
+// before Claude Cowork has anywhere to run, per relay-kit/README.md.
+async function setupRelayLanesInteractively(context: vscode.ExtensionContext, log: Log): Promise<void> {
+  const count = await vscode.window.showQuickPick(['1', '2', '3'], {
+    placeHolder: 'How many relay lanes? (each is one parallel Claude Cowork session — 3 is typical)',
+  });
+  if (!count) return;
+  const base = await vscode.window.showInputBox({
+    prompt: 'Base folder for lane 1 (further lanes go alongside it as -2, -3, …)',
+    value: path.join(HOME, 'Documents', 'claude-relay'),
+  });
+  if (!base) return;
+  const script = path.join(context.extensionPath, 'relay-kit', 'setup.sh');
+  execFile('/bin/bash', [script, base, count], (err, stdout, stderr) => {
+    log.info(stdout || '');
+    if (err) {
+      void vscode.window.showErrorMessage(`Claude Queue Relay: lane setup failed — ${stderr || err.message}`);
+      log.warn(stderr || String(err));
+      return;
+    }
+    const lanes = Array.from({ length: Number(count) }, (_, i) => (i === 0 ? base : `${base}-${i + 1}`));
+    void vscode.window
+      .showInformationMessage(
+        `Claude Queue Relay: ${count} relay lane${count === '1' ? '' : 's'} ready at ${base}. Point claudeQueueRelay.relayLanes at ${count === '1' ? 'it' : 'them'}?`,
+        'Set it',
+        'Show me the setup log',
+      )
+      .then((choice) => {
+        if (choice === 'Set it') void vscode.workspace.getConfiguration('claudeQueueRelay').update('relayLanes', lanes, vscode.ConfigurationTarget.Global);
+        if (choice === 'Show me the setup log') log.show();
+      });
+  });
 }
 
 function offerHookInstall(): void {
   void vscode.window
-    .showInformationMessage('Claude Tab Queue needs its Claude Code hooks installed to see sessions.', 'Install hooks')
-    .then((choice) => choice && run('claudeTabQueue.installHooks'));
+    .showInformationMessage('Claude Queue Relay needs its Claude Code hooks installed to see sessions.', 'Install hooks')
+    .then((choice) => choice && run('claudeQueueRelay.installHooks'));
 }
 
 // Pinned editors ignore ⌘W by default; a queued tab should close like any other.
@@ -1856,7 +1891,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const log = new Log(path.join(BASE_DIR, 'log.txt'), windowName);
   const queue = new TabQueue(log);
   const spool = new EventSpool(EVENTS_DIR, (event) => queue.handle(event), log);
-  const command = (name: string, fn: (...args: any[]) => unknown) => vscode.commands.registerCommand(`claudeTabQueue.${name}`, fn);
+  const command = (name: string, fn: (...args: any[]) => unknown) => vscode.commands.registerCommand(`claudeQueueRelay.${name}`, fn);
 
   // Claude restarts its CLI processes after a window reload, later than we activate, so keep re-seeding.
   const timers = [
@@ -1875,7 +1910,7 @@ export function activate(context: vscode.ExtensionContext): void {
     queue,
     spool,
     { dispose: () => timers.forEach(clearInterval) },
-    command('showQueue', () => run('claudeTabQueue.board.focus')),
+    command('showQueue', () => run('claudeQueueRelay.board.focus')),
     command('goToSession', (id: string) => queue.goToSession(id)),
     command('goToTab', (label: string) => queue.goToTab(label)),
     command('openLane', (n: number) => queue.openLaneFile(n)),
@@ -1901,6 +1936,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     command('clear', () => queue.markAllSeen()),
     command('installHooks', () => installHooksInteractively(log)),
+    command('setupRelayLanes', () => void setupRelayLanesInteractively(context, log)),
   );
 
   spool.start();

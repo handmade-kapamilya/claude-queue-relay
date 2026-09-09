@@ -1,4 +1,4 @@
-# Claude Tab Queue
+# Claude Queue Relay
 
 A queue for running many Claude Code tabs at once. One board, in the sidebar or popped
 out into its own window, that answers "what needs me?" at a glance.
@@ -9,14 +9,22 @@ out into its own window, that answers "what needs me?" at a glance.
   macOS notification and an in-window toast, and, if `pinMode` is on, pins that tab to the front (off by default: every Claude tab stays a regular tab). If you are
   already looking at the tab, it stays silent and just moves into Ready.
 - **One list, icons tell the story.** Needs-you (⚠ / footer emoji) at the top, running (pulsing dot),
-  seen, then idle tabs at the bottom. A tab waiting on a relay lane is a regular row too, with its lane keycap, and is repeated in that lane's drawer.
-  `⌃⌘U` goes straight to the most important tab (money > waiting > failed > BLOCKED lane >
-  landed lane > file > ready, oldest first); `⌃⌘J` opens a picker of every tab and lane.
-- **Mute.** `⇧⌥⌘J` (or the speaker icon, or `touch ~/.claude-tab-queue/quiet`) holds all
+  seen, then idle tabs at the bottom — that's the starting order. Drag any row to put it wherever
+  you want; the board remembers your order from then on. `⌃⌘U` goes straight to the most important
+  tab (money > waiting > failed > BLOCKED lane > landed lane > file > ready, oldest first); `⌃⌘J`
+  opens a picker of every tab and lane.
+- **Tab groups.** The folder icon above the list makes a new group; drag rows onto its header to
+  add them, drag the header itself to reorder past other rows and groups. Click the name to
+  rename it in place, the dot to pick one of 8 colors, the chevron to collapse it. The ✕ on
+  a group's header ungroups its tabs (they stay open) without closing anything.
+- **The focused tab stands out.** Whichever tab is active gets a gold-tinted row, bold text, and
+  its close ✕ stays visible without a hover — not just the tab under your mouse.
+- **Mute.** `⇧⌥⌘J` (or the speaker icon, or `touch ~/.claude-queue-relay/quiet`) holds all
   pings until you unmute; money / failed / BLOCKED lanes still break through; one digest of
   what landed when you unmute.
-- **Relay lanes.** Watches `~/Documents/hk-relay{,-2,-3}`. A tab that sends a task to a lane
-  gets that lane's number as its icon and appears under the lane; its title becomes
+- **Relay lanes (optional, off by default).** Point `claudeQueueRelay.relayLanes` at any
+  folders you like — `relay-kit/` has a one-command setup and the full how-it-works. A tab that
+  sends a task to a lane gets that lane's number as its icon and appears under the lane; its title becomes
   `<status>N️⃣ <task name>` where ▶️ = in flight, ⏭️ = next up, ⏳ = queued behind, ✅ = landed,
   ⚠️ = blocked, re-synced as the queue moves. Lanes show READY → RUNNING → COMPLETE | PARTIAL | BLOCKED (BLOCKED = caution, and it
   moves into "Waiting on you"), expand to Result / Now / Queued items, and clicking a lane
@@ -57,16 +65,22 @@ out into its own window, that answers "what needs me?" at a glance.
 - **Pop out.** The "Pop out" button opens the board as an editor and moves it into its own
   window; drag it to a second screen and use View: Toggle Full Screen.
 
-The last lines of each reply are read for the hk-ops status footer (🤙 ⚠️ 💸 ⏳ 1️⃣2️⃣3️⃣ 📂 ❌)
-and the bolded ask on a ⚠️ / 💸 / 📂 line becomes the row text.
+### Status footer
+
+The last few lines of each reply are scanned for a status-footer convention:
+🤙 done · ⚠️ needs you · 💸 money gate · ⏳ background · 1️⃣2️⃣3️⃣ awaiting a relay lane ·
+📂 file waiting · ❌ failed — the bolded ask on a ⚠️ / 💸 / 📂 line becomes the row's text.
+Don't use that convention? Rows just fall back to a generic "seen" state — nothing breaks,
+you just don't get the emoji-driven row text. To match your own vocabulary, edit the
+`GATES` / `REST` tables in `src/footer.ts` and rebuild.
 
 ## How it works
 
-1. `Claude Tab Queue: Install Claude Code Hooks` writes `~/.claude-tab-queue/emit.sh` and
+1. `Claude Queue Relay: Install Claude Code Hooks` writes `~/.claude-queue-relay/emit.sh` and
    registers it in `~/.claude/settings.json` for `Stop`, `UserPromptSubmit`,
    `PermissionRequest`, `PreToolUse` (AskUserQuestion / ExitPlanMode), `PostToolUse`,
    `Notification`, `SessionStart/End`. The script spools each hook's JSON into
-   `~/.claude-tab-queue/events/` and prints nothing, so Claude's behavior never changes.
+   `~/.claude-queue-relay/events/` and prints nothing, so Claude's behavior never changes.
 2. Every VS Code window reads the spool and keeps the sessions whose `cwd` is inside its
    workspace folders (worktrees under the repo count).
 3. A session is matched to its tab by the tab that was active when the prompt was
@@ -86,15 +100,25 @@ and the bolded ask on a ⚠️ / 💸 / 📂 line becomes the row text.
 ```sh
 npm install
 npm run compile
-npm run package            # claude-tab-queue-<version>.vsix
-code --install-extension claude-tab-queue-*.vsix --force
+npm run package            # claude-queue-relay-<version>.vsix
+code --install-extension claude-queue-relay-*.vsix --force
 npm run install-hooks      # or the command palette entry
 ```
 
 New windows pick it up immediately; already-open windows need `Developer: Reload Window`.
-Log: `Claude Tab Queue: Open Log`, or `~/.claude-tab-queue/log.txt`.
+Log: `Claude Queue Relay: Open Log`, or `~/.claude-queue-relay/log.txt`.
 
 ## Settings
 
-`claudeTabQueue.pinMode` (immediate | onNextSwitch | off, default off), `sound`, `macNotification`,
-`toast`, `markUnread`, `pinnedRow`, `relayLanes`, `extraRoots`. Mute is a mode, not a setting.
+`claudeQueueRelay.pinMode` (immediate | onNextSwitch | off, default off), `sound`, `macNotification`,
+`toast`, `markUnread`, `pinnedRow`, `relayLanes` (default `[]`), `extraRoots`. Mute is a mode, not a setting.
+
+## Relay lanes
+
+Optional, off by default. `Claude Queue Relay: Set Up Relay Lanes` (command palette) scaffolds
+folders and wires the setting for you; see `relay-kit/README.md` for the full setup, prerequisites,
+and the day-to-day send / drain / receive loop.
+
+## License
+
+MIT — see `LICENSE`.

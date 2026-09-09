@@ -3,18 +3,18 @@ import * as os from 'os';
 import * as path from 'path';
 
 const HOME = os.homedir();
-export const BASE_DIR = path.join(HOME, '.claude-tab-queue');
+export const BASE_DIR = path.join(HOME, '.claude-queue-relay');
 export const EVENTS_DIR = path.join(BASE_DIR, 'events');
 export const EMIT_PATH = path.join(BASE_DIR, 'emit.sh');
 const SETTINGS_PATH = path.join(HOME, '.claude', 'settings.json');
-const COMMAND = '"$HOME/.claude-tab-queue/emit.sh"';
-const MARKER = '.claude-tab-queue/emit.sh';
+const COMMAND = '"$HOME/.claude-queue-relay/emit.sh"';
+const MARKER = '.claude-queue-relay/emit.sh';
 
 // Must stay silent: stdout from UserPromptSubmit is fed to Claude as context and
 // stdout from PermissionRequest is parsed as a decision.
 const EMIT_SH = `#!/bin/sh
-# Spools one Claude Code hook event for the Claude Tab Queue VS Code extension.
-d="$HOME/.claude-tab-queue/events"
+# Spools one Claude Code hook event for the Claude Queue Relay VS Code extension.
+d="$HOME/.claude-queue-relay/events"
 mkdir -p "$d" 2>/dev/null || exit 0
 f="$d/$(date +%s)-$$-$RANDOM"
 cat > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f.json" 2>/dev/null

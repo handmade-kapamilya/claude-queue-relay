@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export class Log implements vscode.Disposable {
-  private readonly channel = vscode.window.createOutputChannel('Claude Tab Queue');
+  private readonly channel = vscode.window.createOutputChannel('Claude Queue Relay');
 
   constructor(private readonly file: string, private readonly windowName: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });

@@ -68,7 +68,7 @@ function fetchUsage(bearer: string): Promise<any> {
   return new Promise((resolve, reject) => {
     const req = https.get(
       'https://api.anthropic.com/api/oauth/usage',
-      { headers: { Authorization: `Bearer ${bearer}`, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': 'claude-tab-queue' }, timeout: 15_000 },
+      { headers: { Authorization: `Bearer ${bearer}`, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': 'claude-queue-relay' }, timeout: 15_000 },
       (res) => {
         let body = '';
         res.on('data', (chunk) => (body += chunk));

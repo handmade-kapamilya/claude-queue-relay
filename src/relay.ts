@@ -255,7 +255,7 @@ export class RelayWatcher implements vscode.Disposable {
     fs.mkdirSync(dir, { recursive: true });
     let dest = path.join(dir, path.basename(task.file));
     if (fs.existsSync(dest)) dest = dest.replace(/\.md$/, `-from-lane-${from.n}.md`);
-    const text = fs.readFileSync(task.file, 'utf8').replace(/^(TASK_ID:.*)$/m, `$1\nMOVED:     lane ${from.n} → lane ${to.n} by Claude Tab Queue`);
+    const text = fs.readFileSync(task.file, 'utf8').replace(/^(TASK_ID:.*)$/m, `$1\nMOVED:     lane ${from.n} → lane ${to.n} by Claude Queue Relay`);
     fs.writeFileSync(dest, text);
     fs.unlinkSync(task.file);
     this.refresh(from);
@@ -275,7 +275,7 @@ export class RelayWatcher implements vscode.Disposable {
     if (task.role === 'queued') return this.moveQueued(task, to);
     const from = this.lanes.find((l) => l.current === task);
     if (!from || from === to || task.status !== 'READY') return;
-    const stamped = readText(task.file).replace(/^(TASK_ID:.*)$/m, `$1\nMOVED:     lane ${from.n} → lane ${to.n} by Claude Tab Queue`);
+    const stamped = readText(task.file).replace(/^(TASK_ID:.*)$/m, `$1\nMOVED:     lane ${from.n} → lane ${to.n} by Claude Queue Relay`);
     const slotFree = !to.current;
     const dest = slotFree
       ? to.inbound.path
@@ -409,7 +409,7 @@ function readText(file: string): string {
 // One copy of a task file, stamped with how it ended, filed under its id.
 function archiveCopy(file: string, archive: string, id: string, kind: string, status: string): string {
   const text = readText(file);
-  const stamp = `DISMISSED: ${new Date().toISOString()} by Claude Tab Queue`;
+  const stamp = `DISMISSED: ${new Date().toISOString()} by Claude Queue Relay`;
   const stamped = /^STATUS:.*$/m.test(text) ? text.replace(/^STATUS:.*$/m, `STATUS:    ${status}\n${stamp}`) : `${text}\nSTATUS:    ${status}\n${stamp}\n`;
   const dest = freeName(path.join(archive, `${id}.${kind}.md`));
   fs.writeFileSync(dest, stamped);

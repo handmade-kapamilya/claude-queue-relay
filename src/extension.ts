@@ -844,13 +844,26 @@ class TabQueue implements vscode.Disposable {
     }
   }
 
+  // A label change is exactly the case where VS Code hands out a fresh Tab object (see the
+  // note on closeTab in tabs.ts), so `s.tab === tab` never matches the session that owned it
+  // a moment ago — the rename is never learned, the session is left bound to a dead Tab, and
+  // it silently drops off the board (and out of its lane) until something else re-adopts it.
+  // A rename never moves a tab to a different group, so fall back to the session whose tab
+  // went stale (no longer locatable) in the same group as the one that just changed.
+  private sessionForRelabeledTab(tab: vscode.Tab): Session | undefined {
+    return (
+      this.sessions().find((s) => s.tab === tab) ??
+      this.sessions().find((s) => s.tab && s.tab.group === tab.group && !tabs.locate(s.tab))
+    );
+  }
+
   private tabRelabeled(tab: vscode.Tab): void {
-    for (const s of this.sessions()) {
-      if (s.tab !== tab) continue;
-      if (s.tabLabel && s.tabLabel !== tab.label) this.rekey(s.tabLabel, tab.label);
-      s.tabLabel = tab.label;
-      if (s.title && !tabs.labelMatches(tab.label, s.title)) void this.learnTitle(s).then(() => this.render());
-    }
+    const s = this.sessionForRelabeledTab(tab);
+    if (!s) return;
+    s.tab = tab;
+    if (s.tabLabel && s.tabLabel !== tab.label) this.rekey(s.tabLabel, tab.label);
+    s.tabLabel = tab.label;
+    void this.learnTitle(s).then(() => this.render());
   }
 
   // A closed tab leaves the board at once; its session is forgotten and re-adopted if the tab comes back.

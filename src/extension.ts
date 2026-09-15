@@ -494,15 +494,27 @@ class TabQueue implements vscode.Disposable {
   private tabOf(session: Session): vscode.Tab | undefined {
     if (session.tab && tabs.locate(session.tab)) return session.tab;
     session.tab = undefined;
-    const name = session.title ?? session.tabLabel;
-    if (!name) return undefined;
     const taken = new Set(this.sessions().filter((s) => s !== session && s.tab).map((s) => s.tab!));
-    const tab = tabs.findByLabel(name, taken);
-    if (!tab) return undefined;
-    session.tab = tab;
-    session.tabLabel = tab.label;
-    this.log.info(`bound ${short(session.id)} → tab "${tab.label}" (by label)`);
-    return tab;
+    // Re-bind by every name we know, NOT just the title. VS Code labels a Claude tab
+    // from the opening prompt ("I would like you to do s…") while session.title is the
+    // AI's summary of the thread ("Vibe filming prompt engine with sliders") — two
+    // different strings for the same tab. This used to read `title ?? tabLabel`, so a
+    // session that had a title never consulted tabLabel, and once the cached tab handle
+    // went stale (a window reload, a tab moved between groups) it could never re-bind:
+    // the lane went "no tab here is waiting for this" while the tab sat open in front of
+    // Alex, and the result was stranded. tabLabel goes first because it is the literal
+    // label VS Code is showing; if the tab really was renamed it simply misses and the
+    // titles below get their turn.
+    for (const name of [session.tabLabel, session.title, session.aiTitle, session.customTitle]) {
+      if (!name) continue;
+      const tab = tabs.findByLabel(name, taken);
+      if (!tab) continue;
+      session.tab = tab;
+      session.tabLabel = tab.label;
+      this.log.info(`bound ${short(session.id)} → tab "${tab.label}" (matched on "${name}")`);
+      return tab;
+    }
+    return undefined;
   }
 
   // The tab that is active when a prompt is submitted is the tab of that session.
@@ -532,9 +544,14 @@ class TabQueue implements vscode.Disposable {
   }
 
   private sessionOnTab(tab: vscode.Tab): Session | undefined {
+    // Same trap as tabOf: the old `s.title ? … : s.tabLabel === …` meant a titled
+    // session never compared its own last-known label against the tab in front of it.
     return (
       this.sessions().find((s) => s.tab === tab) ??
-      this.sessions().find((s) => (s.title ? tabs.labelMatches(tab.label, s.title) : s.tabLabel === tab.label))
+      this.sessions().find((s) => s.tabLabel === tab.label) ??
+      this.sessions().find((s) =>
+        [s.title, s.aiTitle, s.customTitle].some((name) => !!name && tabs.labelMatches(tab.label, name)),
+      )
     );
   }
 

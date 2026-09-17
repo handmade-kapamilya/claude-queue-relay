@@ -349,6 +349,23 @@ let activeSwatchPop = null;
 // and every later mutation re-broadcasts so any other open surface stays a mirror, not a fork.
 let receivedLayoutSync = false;
 let pushedInitialLayout = false;
+// render() replaces every row's DOM node from scratch (root.replaceChildren), so a snapshot
+// landing between a click's mousedown and mouseup swaps the ✕/row a finger is already
+// mid-press on for a freshly built one at the same pixel — the click then lands on
+// whatever session THAT new node belongs to, closing a tab Alex never touched. Snapshots
+// arrive constantly (any tab finishing, any relay lane changing) and Alex uses this board
+// often enough that the race was landing for real, not just in theory. Fix: while a mouse
+// gesture is in flight anywhere on the page, hold the latest snapshot and apply it only
+// once the gesture (and any click it produces) has fully resolved.
+let gestureInFlight = false;
+let pendingSnapshot = null;
+window.addEventListener('mousedown', function () { gestureInFlight = true; }, true);
+window.addEventListener('mouseup', function () {
+  setTimeout(function () {
+    gestureInFlight = false;
+    if (pendingSnapshot) { const s = pendingSnapshot; pendingSnapshot = null; render(s); }
+  }, 0);
+}, true);
 const root = document.getElementById('root');
 // Dusty, low-chroma tones in the same warm-gold family as the rest of the board, instead of
 // Chrome's vivid tab colors — folders shouldn't be the brightest thing on screen.
@@ -359,7 +376,7 @@ const OLD_GROUP_COLORS = ['#5f6368', '#1a73e8', '#d93025', '#f9ab00', '#188038',
 const LANE = ['1\\uFE0F\\u20E3', '2\\uFE0F\\u20E3', '3\\uFE0F\\u20E3', '4\\uFE0F\\u20E3', '5\\uFE0F\\u20E3'];
 window.addEventListener('message', function (e) {
   if (!e.data) return;
-  if (e.data.type === 'snapshot') render(e.data.snapshot);
+  if (e.data.type === 'snapshot') { if (gestureInFlight) { pendingSnapshot = e.data.snapshot; } else { render(e.data.snapshot); } }
   if (e.data.type === 'showDoctor') { state.showDoctor = true; state.showKeys = false; state.openLane = null; vscode.setState(state); render(current); }
   if (e.data.type === 'layoutSync') {
     receivedLayoutSync = true;

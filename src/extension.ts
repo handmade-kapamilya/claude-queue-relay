@@ -959,10 +959,13 @@ class TabQueue implements vscode.Disposable {
   }
 
   // The ✕ on a row closes that tab; the board drops the row the moment VS Code reports it closed.
+  // Closing is destructive, so an unresolved session only matches an EXACT label here, never
+  // Claude's truncated-title fuzzy match — a wrong guess would silently close someone else's
+  // live tab instead of the one Alex actually pointed at.
   async closeRow(id: string | undefined, label: string): Promise<void> {
     const session = id ? this.registry.sessions.get(id) : undefined;
-    const tab = (session && this.tabOf(session)) ?? tabs.findByLabel(label);
-    if (!tab) return void vscode.window.showWarningMessage(`No open tab named "${label}" in this window.`);
+    const tab = (session && this.tabOf(session)) ?? tabs.claudeTabs().find((t) => t.label === label);
+    if (!tab) return void vscode.window.showWarningMessage(`No open tab named "${label}" in this window — not closing anything, to be safe.`);
     await tabs.closeTab(tab);
     this.log.info(`closed "${tab.label}" from the board`);
   }

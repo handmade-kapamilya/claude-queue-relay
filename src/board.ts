@@ -214,7 +214,6 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--vscode-charts-blue); }
 .pulse { animation: pulse 2.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
-.hollow { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--vscode-descriptionForeground); }
 .empty { color: var(--vscode-descriptionForeground); padding: 3px 6px; font-style: italic; font-size: 12px; }
 .y { color: var(--vscode-charts-yellow); } .o { color: var(--vscode-charts-orange); } .r { color: var(--vscode-charts-red); }
 .g { color: var(--vscode-charts-green); } .b { color: var(--vscode-charts-blue); } .dim { opacity: .6; }
@@ -411,13 +410,28 @@ function laneMark(n) { return LANE[n - 1] || ('#' + n); }
 function numIcon(n) {
   return svg('<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="6.6" fill="none" stroke="var(--vscode-charts-blue)" stroke-width="1.5"/><text x="8" y="8.7" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" font-family="inherit" fill="var(--vscode-charts-blue)">' + n + '</text></svg>');
 }
+// Done = a plain filled green circle, always, regardless of which signal emoji finished it —
+// one unambiguous "this is done" shape instead of a grab-bag of checkmarks/emoji.
+function doneIcon() {
+  return svg('<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="6" fill="var(--vscode-charts-green)"/></svg>');
+}
+// Caution = a custom outlined triangle + exclamation (not the default emoji glyph), same
+// stroke technique as the other row icons so the whole set reads as one family.
+function cautionIcon() {
+  return svg('<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="var(--vscode-charts-yellow)" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><path d="M8 2.3 14.4 13.3A1 1 0 0 1 13.5 14.8H2.5A1 1 0 0 1 1.6 13.3L8 2.3Z"/><path d="M8 6.6v3.1"/><circle cx="8" cy="11.6" r=".9" fill="var(--vscode-charts-yellow)" stroke="none"/></svg>');
+}
+// Idle = an outline ring only, same muted tone as the bottom toolbar icons (currentColor over
+// var(--vscode-descriptionForeground)) — transparent inside, never competing for attention.
+function idleIcon() {
+  return svg('<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--vscode-descriptionForeground)" stroke-width="1.4"/></svg>');
+}
 function rowIcon(r) {
   if (r.snoozed) return el('span', 'dim', '\\uD83D\\uDCA4');
-  if (r.state === 'waiting') return el('span', 'y', '\\u26A0');
-  if (r.state === 'ready') return el('span', r.seen ? 'dim' : 'g', r.emoji || '\\u2713');
+  if (r.state === 'waiting') return cautionIcon();
+  if (r.state === 'ready') { const n = doneIcon(); if (r.seen) n.classList.add('dim'); return n; }
   if (r.state === 'running') return el('span', 'dot pulse');
   if (r.lanes.length) return numIcon(r.lanes[0]);
-  return el('span', 'hollow');
+  return idleIcon();
 }
 function row(r) {
   const quiet = r.snoozed || r.state === 'idle' || (r.state === 'ready' && r.seen);
@@ -947,6 +961,41 @@ function groupHeader(g, memberCount) {
   });
   return head;
 }
+// Status tier for auto-reordering: done floats to the very top, then working, then caution,
+// then idle/lane-not-started, then snoozed (snoozing means "get it out of my way," so it sinks
+// below even idle). This is a DISPLAY order only — state.topOrder / groupMembers (the manual
+// drag order) is never rewritten by it, so the two features don't fight: same-tier rows keep
+// whatever order Alex dragged them into, and a drop still targets the id under the cursor via
+// the persisted array, unaffected by how it's currently sorted on screen.
+function statusTier(r) {
+  if (r.snoozed) return 4;
+  if (r.state === 'ready') return 0;
+  if (r.state === 'running') return 1;
+  if (r.state === 'waiting') return 2;
+  return 3;
+}
+function sortByTier(rows) {
+  return rows
+    .map(function (r, i) { return { r: r, i: i, t: statusTier(r) }; })
+    .sort(function (a, b) { return a.t - b.t || a.i - b.i; })
+    .map(function (x) { return x.r; });
+}
+// A group's tier is its most urgent live member's tier (even while collapsed), so a group
+// carrying a just-finished tab floats up as a unit instead of sitting stuck in its drag position.
+function displayOrder(ids, byKey) {
+  function tierOf(id) {
+    if (id.indexOf('grp:') === 0) {
+      const members = (state.groupMembers[id.slice(4)] || []).map(function (k) { return byKey.get(k); }).filter(Boolean);
+      return members.length ? Math.min.apply(null, members.map(statusTier)) : 3;
+    }
+    const r = byKey.get(id);
+    return r ? statusTier(r) : 3;
+  }
+  return ids
+    .map(function (id, i) { return { id: id, i: i, t: tierOf(id) }; })
+    .sort(function (a, b) { return a.t - b.t || a.i - b.i; })
+    .map(function (x) { return x.id; });
+}
 function render(s) {
   current = s;
   syncLayout(s.rows);
@@ -954,13 +1003,13 @@ function render(s) {
   if (!s.rows.length) frag.appendChild(el('div', 'empty', 'no Claude tabs open here'));
   frag.appendChild(groupToolbar());
   const byKey = new Map(s.rows.map(function (r) { return [r.key, r]; }));
-  state.topOrder.forEach(function (id) {
+  displayOrder(state.topOrder, byKey).forEach(function (id) {
     if (id.indexOf('grp:') === 0) {
       const gid = id.slice(4);
       const g = state.groups.find(function (x) { return x.id === gid; });
       if (!g) return;
       const memberKeys = state.groupMembers[gid] || [];
-      const members = memberKeys.map(function (k) { return byKey.get(k); }).filter(Boolean);
+      const members = sortByTier(memberKeys.map(function (k) { return byKey.get(k); }).filter(Boolean));
       const section = el('div', 'gsection');
       section.style.setProperty('--gc', g.color);
       section.appendChild(groupHeader(g, members.length));

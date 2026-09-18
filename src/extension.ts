@@ -916,7 +916,7 @@ class TabQueue implements vscode.Disposable {
   private onBoard(m: BoardMessage): void {
     switch (m.type) {
       case 'goToSession':
-        return void this.goToSession(m.id);
+        return void this.goToSession(m.id, m.label);
       case 'goToTab':
         return void this.goToTab(m.label);
       case 'openCowork':
@@ -970,11 +970,16 @@ class TabQueue implements vscode.Disposable {
     this.log.info(`closed "${tab.label}" from the board`);
   }
 
-  async goToSession(id: string): Promise<void> {
+  // A row's sessionId can outlive the registry entry it pointed at — pruned, or just
+  // momentarily out of sync with the snapshot still on screen. That used to make the click
+  // do nothing at all with zero feedback (a "dead" tab in the board, silently unclickable).
+  // Fall back to an exact label match the same way closeRow already does, and always tell
+  // Alex when nothing resolves instead of failing silently.
+  async goToSession(id: string, label?: string): Promise<void> {
     const session = this.registry.sessions.get(id);
-    if (!session) return;
-    const tab = this.tabOf(session) ?? (await this.resumeHere(session));
-    if (!tab) return void vscode.window.showWarningMessage(`Could not open "${sessionLabel(session)}" in this window.`);
+    let tab = session ? this.tabOf(session) ?? (await this.resumeHere(session)) : undefined;
+    if (!tab && label) tab = tabs.findByLabel(label);
+    if (!tab) return void vscode.window.showWarningMessage(`Could not open "${label ?? (session && sessionLabel(session))}" in this window.`);
     await this.focus(tab);
   }
 

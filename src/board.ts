@@ -85,7 +85,7 @@ export interface Snapshot {
 }
 
 export type BoardMessage =
-  | { type: 'goToSession'; id: string }
+  | { type: 'goToSession'; id: string; label: string }
   | { type: 'goToTab'; label: string }
   | { type: 'openCowork'; n: number }
   | { type: 'openLaneFile'; n: number; file?: string }
@@ -360,12 +360,18 @@ let pushedInitialLayout = false;
 let gestureInFlight = false;
 let pendingSnapshot = null;
 window.addEventListener('mousedown', function () { gestureInFlight = true; }, true);
-window.addEventListener('mouseup', function () {
+function endGesture() {
   setTimeout(function () {
     gestureInFlight = false;
     if (pendingSnapshot) { const s = pendingSnapshot; pendingSnapshot = null; render(s); }
   }, 0);
-}, true);
+}
+window.addEventListener('mouseup', endGesture, true);
+// A drag (every row is draggable, for reorder) never fires 'mouseup' on this document at all —
+// the browser hands mouse handling to the native DnD session instead. Without this, starting a
+// drag left gestureInFlight stuck true forever, so the board silently stopped applying new
+// snapshots and rows went stale/unresponsive until an unrelated clean click reset it.
+window.addEventListener('dragend', endGesture, true);
 const root = document.getElementById('root');
 // Dusty, low-chroma tones in the same warm-gold family as the rest of the board, instead of
 // Chrome's vivid tab colors — folders shouldn't be the brightest thing on screen.
@@ -434,7 +440,7 @@ function row(r) {
   d.appendChild(cx);
   d.onmouseleave = function () { cx.classList.add('linger'); setTimeout(function () { cx.classList.remove('linger'); }, 500); };
   d.title = r.label + '\\n' + (r.peek || r.text);
-  d.onclick = function () { send(r.sessionId ? { type: 'goToSession', id: r.sessionId } : { type: 'goToTab', label: r.tabLabel || r.label }); };
+  d.onclick = function () { send(r.sessionId ? { type: 'goToSession', id: r.sessionId, label: r.tabLabel || r.label } : { type: 'goToTab', label: r.tabLabel || r.label }); };
   return d;
 }
 function taskGlyph(t) {

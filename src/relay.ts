@@ -26,7 +26,10 @@ export interface LaneTask {
 }
 
 // Lane lifecycle (lane CLAUDE.md): READY → RUNNING → COMPLETE | PARTIAL | BLOCKED → CONSUMED.
-export type LaneStage = 'empty' | 'queued' | 'ready' | 'running' | 'complete' | 'partial' | 'blocked' | 'abandoned';
+// NEEDS_YOU_IN_COWORK is a side-branch off RUNNING, not a finish line: Cowork is paused
+// mid-task waiting on Alex's own hands (a password/2FA/OTP, or a decision the task marked
+// as "ask Alex live") directly in ITS OWN session — nothing here is a receivable result yet.
+export type LaneStage = 'empty' | 'queued' | 'ready' | 'running' | 'complete' | 'partial' | 'blocked' | 'abandoned' | 'needs_you_live';
 
 export interface Lane {
   n: number;
@@ -56,6 +59,7 @@ const RESULT_STAGES: Record<string, LaneStage> = {
   ABANDONED: 'abandoned',
   CANCELLED: 'abandoned',
   FAILED: 'abandoned',
+  NEEDS_YOU_IN_COWORK: 'needs_you_live',
 };
 
 function readLaneFile(p: string): LaneFile {
@@ -134,8 +138,10 @@ export function laneIsResult(lane: Lane): boolean {
   return lane.stage === 'complete' || lane.stage === 'partial' || lane.stage === 'blocked' || lane.stage === 'abandoned';
 }
 
+// A live gate still pings once, even though it isn't a receivable result — Cowork is
+// genuinely stuck until Alex acts, same urgency as a landed BLOCKED.
 function landedKey(lane: Lane): string | undefined {
-  if (!lane.result || !laneIsResult(lane)) return undefined;
+  if (!lane.result || !(laneIsResult(lane) || lane.stage === 'needs_you_live')) return undefined;
   return `${lane.result.taskId ?? ''}|${lane.result.status}`;
 }
 
@@ -148,6 +154,10 @@ const STAGE_LOOK: Record<LaneStage, [string, string?]> = {
   partial: ['warning', 'charts.orange'],
   blocked: ['warning', 'charts.yellow'],
   abandoned: ['error', 'charts.red'],
+  // Same caution glyph as blocked (Alex: "the caution icon is the right thing to have"),
+  // purple instead of yellow so it reads as a different KIND of caution at a glance —
+  // go to Cowork, not Receive into a tab.
+  needs_you_live: ['warning', 'charts.purple'],
 };
 
 export function laneLook(lane: Lane): Look {
@@ -171,6 +181,8 @@ function laneDescription(lane: Lane): string {
       return `landed PARTIAL: ${name} · ${say}${queued}`;
     case 'blocked':
       return `BLOCKED, needs you: ${name} · ${say}${queued}`;
+    case 'needs_you_live':
+      return `needs you, live, in Cowork: ${name}${queued}`;
     case 'abandoned':
       return `${lane.result?.status.toLowerCase() ?? 'abandoned'}: ${name}${queued}`;
     case 'queued':

@@ -217,6 +217,7 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .empty { color: var(--vscode-descriptionForeground); padding: 3px 6px; font-style: italic; font-size: 12px; }
 .y { color: var(--vscode-charts-yellow); } .o { color: var(--vscode-charts-orange); } .r { color: var(--vscode-charts-red); }
 .g { color: var(--vscode-charts-green); } .b { color: var(--vscode-charts-blue); } .dim { opacity: .6; }
+.p { color: var(--vscode-charts-purple); } /* needs you live, in Cowork — distinct from blocked's yellow */
 /* Row-side buttons (snooze, dismiss) show on hover only. */
 .zz, .x { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0; }
 .row:hover .zz, .row:hover .x { opacity: .75; }
@@ -463,6 +464,7 @@ function taskGlyph(t) {
   if (t.status === 'COMPLETE') return ['g', '\\u2713'];
   if (t.status === 'PARTIAL') return ['o', '\\u26A0'];
   if (t.status === 'BLOCKED') return ['y', '\\u26A0'];
+  if (t.status === 'NEEDS_YOU_IN_COWORK') return ['p', '\\u26A0'];
   return ['r', '\\u2715'];
 }
 function child(iconNode, label, meta, onclick, tip) {
@@ -490,6 +492,7 @@ function dismissButton(l, task) {
 }
 function stageMark(l) {
   if (l.stage === 'blocked') return el('span', 'y', '\\u26A0');
+  if (l.stage === 'needs_you_live') return el('span', 'p', '\\u26A0');
   const cls = { running: 'sd pulse b', ready: 'sd b', complete: l.seen ? 'sd dim' : 'sd g', partial: 'sd o', abandoned: 'sd r', queued: 'sd dim' }[l.stage];
   return cls ? el('span', cls) : null;
 }

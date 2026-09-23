@@ -29,6 +29,7 @@ const LANDING_WORDS: Partial<Record<LaneStage, string>> = {
   partial: 'landed PARTIAL',
   blocked: 'BLOCKED, needs you',
   abandoned: 'abandoned',
+  needs_you_live: 'needs you, live, in Cowork',
 };
 const QUIET_FILE = path.join(BASE_DIR, 'quiet');
 const SNOOZE_FILE = path.join(BASE_DIR, 'snooze.json');
@@ -44,8 +45,9 @@ interface Snooze {
   until?: number;
   lane?: number;
 }
-// What Alex should look at first, in order.
-const RANK = { money: 0, waiting: 1, failed: 2, blocked: 3, landed: 4, file: 5, ready: 6 } as const;
+// What Alex should look at first, in order. liveGate sits just under money: Cowork is
+// idle, mid-task, waiting on Alex's own hands — nothing else can move it forward.
+const RANK = { money: 0, liveGate: 0.5, waiting: 1, failed: 2, blocked: 3, landed: 4, file: 5, ready: 6 } as const;
 type Rank = keyof typeof RANK;
 const SIGNAL_RANK: Record<string, Rank> = { money: 'money', failed: 'failed', file: 'file', 'needs-you': 'waiting' };
 const GATED = new Set(['money', 'failed', 'needs-you', 'file']);
@@ -584,6 +586,22 @@ class TabQueue implements vscode.Disposable {
     const returnTo = task?.returnTo;
     const tab = this.tabFor(task, lane.n);
     this.log.info(`relay lane ${lane.n} ${lane.stage}: ${name}${returnTo ? ` return-to "${returnTo}"` : ''}${tab ? ' (tab found)' : ''}`);
+    // A live gate never routes to a VS Code tab — the fix is Alex going to Cowork itself,
+    // not "Receive"-ing a result that doesn't exist yet.
+    if (lane.stage === 'needs_you_live') {
+      const why = this.resultDetail(lane) ?? 'needs a password, a 2FA/OTP code, or a money/approval click';
+      this.announce({
+        key: `relay-${lane.n}-${Math.round(lane.outbound.mtime)}`,
+        headline: `${keycap(lane.n)} Relay lane ${lane.n} needs you, live, in Cowork`,
+        detail: `${name}: ${why}. Not finished — open Cowork and handle it there.`,
+        sound: 'waiting',
+        gate: true,
+        toast: true,
+        action: 'Open Cowork',
+        run: () => this.openCowork(lane.n),
+      });
+      return void this.render();
+    }
     this.announce({
       key: `relay-${lane.n}-${Math.round(lane.outbound.mtime)}`,
       headline: `${keycap(lane.n)} Relay lane ${lane.n} ${LANDING_WORDS[lane.stage] ?? lane.stage}`,
@@ -1414,6 +1432,18 @@ class TabQueue implements vscode.Disposable {
     };
     const cowork: BriefAction = { label: 'Open Cowork ↗', kind: 'cowork' };
     const clear: BriefAction = { label: 'Clear it', kind: 'clear' };
+    // A live gate is not a finished result — Cowork is mid-task, paused on Alex's own
+    // hands (a password/2FA/OTP, or a decision only he can make on the spot). Nothing
+    // to Receive yet, so the only real move is going to Cowork itself and handling it
+    // there; Clear stays available only as an escape hatch if Alex wants to abandon it.
+    if (lane.stage === 'needs_you_live' && lane.result) {
+      return {
+        state: `${name(lane.result)} needs you, live, in Cowork`,
+        detail: this.resultDetail(lane),
+        next: 'Open Cowork and handle it there directly — a password, a 2FA/OTP code, or a money/approval click. Nothing is finished, so there is nothing to Receive yet. Once you are done, tell Cowork to continue in its own chat; this updates the moment it actually finishes.',
+        actions: [{ ...cowork, primary: true }, clear],
+      };
+    }
     if (laneIsResult(lane) && lane.result) {
       const tab = this.tabFor(lane.result, lane.n);
       const word = LANDING_WORDS[lane.stage] ?? lane.stage;
@@ -1704,7 +1734,8 @@ class TabQueue implements vscode.Disposable {
     }
     for (const lane of this.relay.lanes) {
       const text = laneLook(lane).description;
-      if (lane.stage === 'blocked') steps.push({ rank: RANK.blocked, since: lane.landedAt ?? 0, label: `Relay lane ${lane.n} BLOCKED`, text, run: () => this.collect(lane) });
+      if (lane.stage === 'needs_you_live') steps.push({ rank: RANK.liveGate, since: lane.landedAt ?? 0, label: `Relay lane ${lane.n} needs you in Cowork`, text, run: () => this.openCowork(lane.n) });
+      else if (lane.stage === 'blocked') steps.push({ rank: RANK.blocked, since: lane.landedAt ?? 0, label: `Relay lane ${lane.n} BLOCKED`, text, run: () => this.collect(lane) });
       else if (laneIsResult(lane) && !lane.seen) steps.push({ rank: RANK.landed, since: lane.landedAt ?? 0, label: `Relay lane ${lane.n} landed`, text, run: () => this.collect(lane) });
     }
     return steps.sort((a, b) => a.rank - b.rank || a.since - b.since);

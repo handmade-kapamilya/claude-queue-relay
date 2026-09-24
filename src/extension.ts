@@ -376,7 +376,7 @@ class TabQueue implements vscode.Disposable {
     session.dormant = false;
     this.logTransition(transition);
     if (event.hook_event_name === 'SessionEnd') return this.forget(session);
-    if (event.hook_event_name === 'UserPromptSubmit') this.promptSubmitted(session);
+    if (event.hook_event_name === 'UserPromptSubmit') this.promptSubmitted(session, event.at);
     const touch = this.laneTouched(event);
     if (touch) void this.laneTouchedBy(session, touch);
     if (transition.from === 'waiting' && transition.to === 'running' && session.tabLabel) void this.unpin(session.tabLabel);
@@ -397,8 +397,8 @@ class TabQueue implements vscode.Disposable {
     this.render();
   }
 
-  private promptSubmitted(session: Session): void {
-    this.bindActiveTab(session);
+  private promptSubmitted(session: Session, eventAt: number): void {
+    this.bindActiveTab(session, eventAt);
     if (session.tabLabel) void this.unpin(session.tabLabel);
     this.unsnooze(session, 'you prompted it');
   }
@@ -519,9 +519,17 @@ class TabQueue implements vscode.Disposable {
     return undefined;
   }
 
-  // The tab that is active when a prompt is submitted is the tab of that session.
-  private bindActiveTab(session: Session): void {
+  // The tab that is active when a prompt is submitted is the tab of that session — but this
+  // event reaches us through a filesystem spool (EventSpool's 40ms fs.watch debounce, 2s poll
+  // fallback, shared by every open window), so "active right now" can lag well behind "active
+  // when Alex actually hit submit." If he's switched tabs in that gap — normal for someone
+  // running 3-4 tabs at once — this used to rebind the session to wherever he'd switched TO,
+  // silently pointing its board row at the wrong tab from then on. Only trust "active right
+  // now" as a stand-in for "active at submit time" when the event is fresh; a stale event with
+  // an already-known, still-open tab keeps that binding instead of overwriting it with a guess.
+  private bindActiveTab(session: Session, eventAt: number): void {
     if (this.dancing) return;
+    if (Date.now() - eventAt > 1500 && this.tabOf(session)) return;
     const active = tabs.activeClaudeTab();
     if (!active) return;
     for (const other of this.sessions()) if (other !== session && other.tab === active) other.tab = undefined;

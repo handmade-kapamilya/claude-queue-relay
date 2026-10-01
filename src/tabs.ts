@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { BASE_DIR } from './hooks';
 
 // Webview id registered by the official Claude Code extension (anthropic.claude-code).
 export const CLAUDE_VIEW_TYPE = 'claudeVSCodePanel';
@@ -155,24 +158,69 @@ export async function unpinActive(label: string): Promise<boolean> {
   return true;
 }
 
+// Every open VS Code window runs its own copy of this extension, and the clipboard dance below
+// writes to the OS clipboard, which is shared machine-wide. Two windows renaming at the same
+// moment interleave their clipboard writes, so one tab can end up pasted with the OTHER window's
+// name — this is the "renamed the wrong tab" / "two tabs end up with the same name" bug. An
+// in-memory flag (like `dancing` elsewhere in this codebase) only guards one process, so this
+// needs a real cross-process lock: an exclusive-create lockfile, since that's atomic on the same
+// filesystem regardless of which process/window holds it.
+const RENAME_LOCK = path.join(BASE_DIR, 'rename.lock');
+const RENAME_LOCK_STALE_MS = 15_000; // a crashed/reloaded window never releases its lock
+const RENAME_LOCK_WAIT_MS = 10_000;
+const RENAME_LOCK_POLL_MS = 150;
+
+async function acquireRenameLock(): Promise<boolean> {
+  const deadline = Date.now() + RENAME_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      fs.mkdirSync(path.dirname(RENAME_LOCK), { recursive: true });
+      fs.writeFileSync(RENAME_LOCK, `${process.pid}`, { flag: 'wx' });
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+      try {
+        if (Date.now() - fs.statSync(RENAME_LOCK).mtimeMs > RENAME_LOCK_STALE_MS) fs.unlinkSync(RENAME_LOCK);
+      } catch {
+        // lost the race to clear a stale lock, or it's gone already — either way, loop and retry
+      }
+    }
+    if (Date.now() > deadline) return false;
+    await pause(RENAME_LOCK_POLL_MS);
+  }
+}
+
+function releaseRenameLock(): void {
+  try {
+    fs.unlinkSync(RENAME_LOCK);
+  } catch {
+    // already gone
+  }
+}
+
 // Claude Code's rename command only offers an input box, so we feed it through the clipboard:
 // the box opens with the current title selected, paste replaces it, Enter accepts.
 export async function renameTab(tab: vscode.Tab, name: string): Promise<boolean> {
-  const done = await whileActive(tab, async () => {
-    const clipboard = await vscode.env.clipboard.readText();
-    await vscode.env.clipboard.writeText(name);
-    try {
-      const rename = vscode.commands.executeCommand('claude-vscode.renameSessionTab');
-      await pause(200);
-      await run('editor.action.clipboardPasteAction');
-      await pause(80);
-      await run('workbench.action.acceptSelectedQuickOpenItem');
-      const outcome = await Promise.race([rename.then(() => 'renamed'), pause(3000).then(() => 'timeout')]);
-      if (outcome === 'timeout') await run('workbench.action.closeQuickOpen');
-      return outcome === 'renamed';
-    } finally {
-      await vscode.env.clipboard.writeText(clipboard);
-    }
-  });
-  return done === true;
+  if (!(await acquireRenameLock())) return false;
+  try {
+    const done = await whileActive(tab, async () => {
+      const clipboard = await vscode.env.clipboard.readText();
+      await vscode.env.clipboard.writeText(name);
+      try {
+        const rename = vscode.commands.executeCommand('claude-vscode.renameSessionTab');
+        await pause(200);
+        await run('editor.action.clipboardPasteAction');
+        await pause(80);
+        await run('workbench.action.acceptSelectedQuickOpenItem');
+        const outcome = await Promise.race([rename.then(() => 'renamed'), pause(3000).then(() => 'timeout')]);
+        if (outcome === 'timeout') await run('workbench.action.closeQuickOpen');
+        return outcome === 'renamed';
+      } finally {
+        await vscode.env.clipboard.writeText(clipboard);
+      }
+    });
+    return done === true;
+  } finally {
+    releaseRenameLock();
+  }
 }

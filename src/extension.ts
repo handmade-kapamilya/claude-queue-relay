@@ -430,7 +430,14 @@ class TabQueue implements vscode.Disposable {
       if (!session.lanes.includes(n)) return;
       session.lanes = session.lanes.filter((lane) => lane !== n);
       this.log.info(`${short(session.id)} collected lane ${n}`);
-      this.relay.markSeen(n);
+      // Reading a landed result IS ingesting it — "seen" used to be as far as this went, which left
+      // a collected job sitting in the lane forever (until Alex noticed and clicked Clear by hand).
+      // Clear it for real now, so collecting and freeing the lane are the same step; a read that
+      // lands when there's no actual result to take (lane mid-flight, already empty) still just
+      // marks seen, so this never cancels something still running.
+      const lane = this.lane(n);
+      if (lane && laneIsResult(lane)) await this.clearLane(n);
+      else this.relay.markSeen(n);
       if (session.tabLabel) void this.unpin(session.tabLabel);
       this.scheduleSync();
       return;

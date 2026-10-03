@@ -539,6 +539,14 @@ class TabQueue implements vscode.Disposable {
     if (Date.now() - eventAt > 1500 && this.tabOf(session)) return;
     const active = tabs.activeClaudeTab();
     if (!active) return;
+    // A prompt doesn't have to come from the tab in front of Alex: after a window restart
+    // every restored session auto-resumes, and a message queued behind a running turn is only
+    // submitted when that turn ends. Either way "active right now" is some other tab, and this
+    // used to point the session (and its running dot and tab rename) at it. A session that
+    // already knows its own tab by name keeps it; so does a tab that belongs to another session.
+    if (session.title && this.tabOf(session)) return;
+    const owner = this.sessionOnTab(active);
+    if (owner && owner !== session && owner.title) return;
     for (const other of this.sessions()) if (other !== session && other.tab === active) other.tab = undefined;
     if (session.tab !== active) this.log.info(`bound ${short(session.id)} → tab "${active.label}" (active at prompt)`);
     session.tab = active;

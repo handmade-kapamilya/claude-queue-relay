@@ -1068,6 +1068,13 @@ class TabQueue implements vscode.Disposable {
     this.board.post({ type: 'showDoctor' });
   }
 
+  // Step to the next/previous row in the board's own displayed order (drag-reordered rows,
+  // flattened groups, then Parked) — the webview owns that order (vscode.setState), so just
+  // hand it the direction and let it resolve + go there the same way a click would.
+  navigate(dir: 1 | -1): void {
+    this.board.post({ type: 'navigate', dir });
+  }
+
   // --- lane titles ---------------------------------------------------------
 
   private scheduleSync(ms = 800): void {
@@ -2026,6 +2033,8 @@ export function activate(context: vscode.ExtensionContext): void {
     command('doctor', () => queue.showDoctor()),
     command('dismissLaneTask', (n: number, file: string) => queue.dismiss(n, file)),
     command('clearLane', (n: number) => queue.clearLane(n)),
+    command('navNext', () => queue.navigate(1)),
+    command('navPrev', () => queue.navigate(-1)),
     command('toggleQuiet', () => queue.toggleQuiet()),
     command('toggleSound', () => queue.toggleSound()),
     command('toggleToast', () => queue.toggleToast()),

@@ -206,8 +206,14 @@ body { margin: 0; padding: 8px 10px 132px; font: var(--vscode-font-size) var(--v
 .row.active .cx { opacity: .82; }
 .row.active:hover .cx { opacity: 1; }
 .icon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; font-size: 12px; }
+/* A row with a status gets its own two-line text column (title, then status underneath) instead
+   of squeezing both onto one line beside each other — that squeeze is what made the status
+   truncate hard at the sidebar's usual (narrow) width. A row with no status stays single-line. */
+.rowtext { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
+.row.twoline { padding-top: 5px; padding-bottom: 5px; }
 .label { flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta { flex: none; max-width: 48%; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rowtext .meta { max-width: none; }
 .stale .meta { color: var(--vscode-charts-orange); }
 .old .meta { color: var(--vscode-charts-red); }
 .stale .label, .old .label { font-weight: 600; }
@@ -396,6 +402,7 @@ window.addEventListener('message', function (e) {
     vscode.setState(state);
     render(current);
   }
+  if (e.data.type === 'navigate') { navigate(e.data.dir); }
 });
 vscode.postMessage({ type: 'ready' });
 
@@ -436,13 +443,15 @@ function rowIcon(r) {
 }
 function row(r) {
   const quiet = r.snoozed || r.state === 'idle' || (r.state === 'ready' && r.seen);
-  const d = el('div', 'row ' + (r.age && !r.snoozed ? r.age.tier : 'fresh') + (quiet ? ' quietrow' : '') + (r.active ? ' active' : ''));
-  const icon = el('span', 'icon'); icon.appendChild(rowIcon(r)); d.appendChild(icon);
-  d.appendChild(el('span', 'label', r.label));
   const lanes = r.lanes.map(laneMark).join('');
   const emoji = r.emoji && r.state !== 'ready' ? r.emoji + ' ' : '';
   const meta = r.snoozed ? r.snoozed : r.state === 'idle' ? '' : (lanes ? lanes + ' ' : '') + emoji + r.text;
-  if (meta) d.appendChild(el('span', 'meta', meta));
+  const d = el('div', 'row ' + (r.age && !r.snoozed ? r.age.tier : 'fresh') + (quiet ? ' quietrow' : '') + (r.active ? ' active' : '') + (meta ? ' twoline' : ''));
+  const icon = el('span', 'icon'); icon.appendChild(rowIcon(r)); d.appendChild(icon);
+  const text = el('div', 'rowtext');
+  text.appendChild(el('span', 'label', r.label));
+  if (meta) text.appendChild(el('span', 'meta', meta));
+  d.appendChild(text);
   if (r.sessionId && (r.snoozed || r.state === 'ready' || r.state === 'waiting')) {
     const zz = el('span', 'zz', r.snoozed ? '\\u21BA' : '\\uD83D\\uDCA4');
     zz.title = r.snoozed ? 'Wake it up now' : 'Snooze: hide it and ping again later';
@@ -659,6 +668,7 @@ const POPOUT = SVG + '<path d="M7 3.5H3.5v9h9V9"/><path d="M9.5 3h3.5v3.5M13 3L7
 const SHORTCUTS = [
   ['\\u2303\\u2318U', 'Go to what needs you next'],
   ['\\u2303\\u2318J', 'Jump to any tab or lane'],
+  ['\\u2318\\u2325\\u2190/\\u2192', 'Step to the previous/next row in board order, then into Parked'],
   ['\\u2303\\u2318.', 'Peek: what each finished tab said, without opening it'],
   ['\\u2303\\u2318\\u232B', 'Sweep: close the \\uD83E\\uDD19 done tabs (\\u2318\\u21E7T reopens)'],
   ['\\u21E7\\u2325\\u2318J', 'Mute / unmute pings'],
@@ -998,6 +1008,40 @@ function displayOrder(ids, byKey) {
     .map(function (id, i) { return { id: id, i: i, t: tierOf(id) }; })
     .sort(function (a, b) { return a.t - b.t || a.i - b.i; })
     .map(function (x) { return x.id; });
+}
+// The same top-to-bottom row order render() draws — drag-reordered rows, groups flattened in
+// place (collapsed ones skipped, since their members aren't on screen to step to), then Parked
+// appended at the end in its own order — so ⌘⌥←/→ walks exactly what Alex sees, including
+// continuing on into Parked once the main list runs out.
+function flatOrder() {
+  const byKey = new Map(current.rows.map(function (r) { return [r.key, r]; }));
+  const out = [];
+  displayOrder(state.topOrder || [], byKey).forEach(function (id) {
+    if (id.indexOf('grp:') === 0) {
+      const gid = id.slice(4);
+      if (state.collapsed[gid]) return;
+      const members = sortByTier((state.groupMembers[gid] || []).map(function (k) { return byKey.get(k); }).filter(Boolean));
+      members.forEach(function (r) { out.push(r.key); });
+    } else if (byKey.has(id)) {
+      out.push(id);
+    }
+  });
+  (state.parked || []).forEach(function (k) { if (byKey.has(k)) out.push(k); });
+  return out;
+}
+function navigate(dir) {
+  const order = flatOrder();
+  if (!order.length) return;
+  const byKey = new Map(current.rows.map(function (r) { return [r.key, r]; }));
+  const at = order.findIndex(function (k) { const r = byKey.get(k); return r && r.active; });
+  let idx = (at < 0 ? (dir > 0 ? -1 : 0) : at) + dir;
+  if (idx < 0) idx = order.length - 1;
+  if (idx >= order.length) idx = 0;
+  const key = order[idx];
+  const r = byKey.get(key);
+  if (!r) return;
+  if (state.parked.indexOf(key) >= 0 && !state.parkedOpen) { state.parkedOpen = true; vscode.setState(state); render(current); }
+  send(r.sessionId ? { type: 'goToSession', id: r.sessionId, label: r.tabLabel || r.label } : { type: 'goToTab', label: r.tabLabel || r.label });
 }
 function render(s) {
   current = s;

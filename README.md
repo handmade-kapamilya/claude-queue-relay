@@ -20,7 +20,9 @@ out into its own window, that answers "what needs me?" at a glance.
 - **Parked.** A fixed shelf pinned above the relay lanes, not a tab group — click it to slide it
   open, drag any row onto it (open or closed) to park that tab, drag a parked row back into the
   list to unpark it. Sidebar and a popped-out board share the same groups/order/Parked state, so
-  popping the board out never starts you over.
+  popping the board out never starts you over. Placements also survive a crashed extension host
+  or a window reload: the layout is saved to `~/.claude-queue-relay/layout.json`, and a tab that
+  is briefly missing from the tab list keeps its Parked/group/order slot for 3 days.
 - **The focused tab stands out.** Whichever tab is active gets a gold-tinted row with a left
   accent bar, bold brighter text, and its close ✕ stays visible without a hover — not just the
   tab under your mouse.

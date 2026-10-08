@@ -280,7 +280,7 @@ function watchQuietFile(onChange: () => void): vscode.Disposable {
 class TabQueue implements vscode.Disposable {
   private readonly registry = new SessionRegistry();
   private readonly relay: RelayWatcher;
-  private readonly board = new Board((m) => this.onBoard(m));
+  private readonly board = new Board((m) => this.onBoard(m), path.join(BASE_DIR, 'layout.json'));
   private readonly status = vscode.window.createStatusBarItem('claudeQueueRelay.status', vscode.StatusBarAlignment.Left, 50);
   private readonly pinnedByUs = new Set<string>();
   private readonly pendingPins = new Set<string>();

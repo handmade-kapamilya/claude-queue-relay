@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 
 export interface Age {
   text: string;
@@ -121,6 +122,10 @@ export interface BoardLayout {
   groupOf: Record<string, string>;
   collapsed: Record<string, boolean>;
   parked: string[];
+  // When each row key was last on the board, and the tab label it carried. They let a placement
+  // outlive a stretch where its tab is missing from the snapshot (see syncLayout).
+  seen?: Record<string, number>;
+  labels?: Record<string, string>;
 }
 
 // One HTML board, shown in the sidebar and, popped out, as an editor that can float on a sidecar.
@@ -130,7 +135,48 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
   private last?: Snapshot;
   private layout?: BoardLayout;
 
-  constructor(private readonly onMessage: (m: BoardMessage) => void) {}
+  // The layout (order, groups, Parked) is also kept on disk, per workspace folder. The webview's
+  // own state and this object both die with the extension host, and the host crashes or reloads
+  // often enough that a layout held only in memory kept being lost.
+  constructor(
+    private readonly onMessage: (m: BoardMessage) => void,
+    private readonly layoutFile?: string,
+  ) {
+    this.layout = this.loadLayout();
+  }
+
+  private workspaceKey(): string {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+  }
+
+  private loadLayout(): BoardLayout | undefined {
+    if (!this.layoutFile) return undefined;
+    try {
+      const all = JSON.parse(fs.readFileSync(this.layoutFile, 'utf8')) as Record<string, BoardLayout>;
+      const saved = all[this.workspaceKey()];
+      return saved && Array.isArray(saved.topOrder) && Array.isArray(saved.parked) ? saved : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private saveLayout(layout: BoardLayout): void {
+    if (!this.layoutFile) return;
+    try {
+      let all: Record<string, BoardLayout> = {};
+      try {
+        all = JSON.parse(fs.readFileSync(this.layoutFile, 'utf8'));
+      } catch {
+        // first save, or an unreadable file: start over
+      }
+      all[this.workspaceKey()] = layout;
+      const tmp = `${this.layoutFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(all));
+      fs.renameSync(tmp, this.layoutFile);
+    } catch {
+      // the board still runs from the webview's own state
+    }
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -175,6 +221,7 @@ export class Board implements vscode.WebviewViewProvider, vscode.Disposable {
       // other open surface, don't forward to the domain onMessage handler.
       if (m.type === 'layout') {
         this.layout = m.layout;
+        this.saveLayout(m.layout);
         this.post({ type: 'layoutSync', layout: m.layout });
         return;
       }
@@ -399,6 +446,8 @@ window.addEventListener('message', function (e) {
     state.groupOf = L.groupOf || {};
     state.collapsed = L.collapsed || {};
     state.parked = L.parked || [];
+    state.seen = L.seen || {};
+    state.labels = L.labels || {};
     vscode.setState(state);
     render(current);
   }
@@ -410,7 +459,7 @@ function send(msg) { vscode.postMessage(msg); }
 // Hands the groups/order/parked slice of state to the extension host, which caches it and
 // mirrors it to every other open surface (sidebar + popped-out panel).
 function pushLayout() {
-  send({ type: 'layout', layout: { topOrder: state.topOrder, groups: state.groups, groupMembers: state.groupMembers, groupOf: state.groupOf, collapsed: state.collapsed, parked: state.parked } });
+  send({ type: 'layout', layout: { topOrder: state.topOrder, groups: state.groups, groupMembers: state.groupMembers, groupOf: state.groupOf, collapsed: state.collapsed, parked: state.parked, seen: state.seen, labels: state.labels } });
 }
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
 function svg(markup) { const w = document.createElement('div'); w.innerHTML = markup; return w.firstElementChild; }
@@ -826,22 +875,70 @@ function syncLayout(rows) {
       state.topOrder = state.topOrder.filter(function (id) { return !(id.indexOf('grp:') === 0 && legacyIds.has(id.slice(4))); });
     }
   }
+  state.seen = state.seen || {};
+  state.labels = state.labels || {};
+  const now = Date.now();
   const live = new Set(rows.map(function (r) { return r.key; }));
-  state.groups.forEach(function (g) {
-    state.groupMembers[g.id] = (state.groupMembers[g.id] || []).filter(function (k) { return live.has(k); });
+  rows.forEach(function (r) {
+    state.seen[r.key] = now;
+    if (r.tabLabel) state.labels[r.key] = r.tabLabel;
   });
-  Object.keys(state.groupOf).forEach(function (k) { if (!live.has(k)) delete state.groupOf[k]; });
-  state.parked = state.parked.filter(function (k) { return live.has(k); });
+  // A placement (Parked, group, drag order) belongs to the tab, not to whichever snapshot is on
+  // screen. The first snapshot after an extension-host restart or a window reload lists the tabs
+  // before their sessions are matched, and the tab list can be short for a moment: dropping a key
+  // the instant it is missing emptied Parked and sent every tab back to the top. So a key that
+  // is missing stays placed for KEEP_MS (KEEP_LABEL_MS for a label-only t:<tab> stand-in) and is
+  // forgotten only after that.
+  const keep = function (k) {
+    if (live.has(k)) return true;
+    const t = state.seen[k];
+    if (t == null) { state.seen[k] = now; return true; }
+    return now - t < (k.indexOf('t:') === 0 ? KEEP_LABEL_MS : KEEP_MS);
+  };
+  // The same tab can come back under the other kind of key (t:<tab label> once its session is
+  // dropped, s:<session id> once one is matched). If exactly one missing placement carried this
+  // tab's label, the tab takes that slot over instead of landing at the top.
+  const isPlaced = function (k) {
+    return state.parked.indexOf(k) >= 0 || state.topOrder.indexOf(k) >= 0 || !!state.groupOf[k];
+  };
+  rows.forEach(function (r) {
+    if (!r.tabLabel || r.tabLabel === 'Claude Code' || isPlaced(r.key)) return;
+    const gone = Object.keys(state.labels).filter(function (k) {
+      return !live.has(k) && state.labels[k] === r.tabLabel && isPlaced(k);
+    });
+    if (gone.length === 1) renameKey(gone[0], r.key);
+  });
+  state.groups.forEach(function (g) {
+    state.groupMembers[g.id] = (state.groupMembers[g.id] || []).filter(keep);
+  });
+  Object.keys(state.groupOf).forEach(function (k) { if (!keep(k)) delete state.groupOf[k]; });
+  state.parked = state.parked.filter(keep);
   const parkedSet = new Set(state.parked);
   const groupIds = new Set(state.groups.map(function (g) { return 'grp:' + g.id; }));
   state.topOrder = state.topOrder.filter(function (id) {
-    return id.indexOf('grp:') === 0 ? groupIds.has(id) : live.has(id) && !state.groupOf[id] && !parkedSet.has(id);
+    return id.indexOf('grp:') === 0 ? groupIds.has(id) : keep(id) && !state.groupOf[id] && !parkedSet.has(id);
+  });
+  Object.keys(state.seen).forEach(function (k) {
+    if (!keep(k)) { delete state.seen[k]; delete state.labels[k]; }
   });
   const placed = new Set(state.topOrder.concat(state.parked));
   rows.forEach(function (r) {
     if (!placed.has(r.key) && !state.groupOf[r.key]) { state.topOrder.push(r.key); placed.add(r.key); }
   });
   vscode.setState(state);
+}
+// How long a tab that is not on the board keeps its place. Two days of laptop-closed or a few
+// reloads shouldn't cost Alex his Parked shelf; a tab he really closed is forgotten after this.
+const KEEP_MS = 3 * 86400000;
+const KEEP_LABEL_MS = 10 * 60000;
+function renameKey(from, to) {
+  function swap(k) { return k === from ? to : k; }
+  state.parked = state.parked.map(swap);
+  state.topOrder = state.topOrder.map(swap);
+  Object.keys(state.groupMembers).forEach(function (g) { state.groupMembers[g] = state.groupMembers[g].map(swap); });
+  if (state.groupOf[from]) { state.groupOf[to] = state.groupOf[from]; delete state.groupOf[from]; }
+  delete state.seen[from];
+  delete state.labels[from];
 }
 function removeFromEverywhere(key) {
   state.topOrder = state.topOrder.filter(function (x) { return x !== key; });

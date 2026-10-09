@@ -344,6 +344,8 @@ class TabQueue implements vscode.Disposable {
         this.render();
       }),
     );
+    // A result consumed while this window was reloading or crashed has no change event left to wake the sweep.
+    this.sweepConsumed();
   }
 
   dispose(): void {

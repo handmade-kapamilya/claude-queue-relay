@@ -66,6 +66,12 @@ out into its own window, that answers "what needs me?" at a glance.
   with no activity for 20 minutes is flagged.
 - **Receive.** In a lane's drawer, Receive puts the landed result in front of the tab that asked
   for it: it focuses that tab and types `check relay N` + Enter (needs Accessibility for VS Code).
+- **Auto-clear.** A result the right tab has taken files itself away, so you never see "You already
+  took this one" with a Clear it button. Two signals: `receipts.sh consume` stamps the result
+  `[CONSUMED …]` (any tab; cleared 30 seconds later, so the tab can finish with the lane's files), or
+  the tab the result is for reads it (`receipts.sh show`, `outbox/<id>.md`, `outbound.md`, by full path
+  or from inside the lane folder) and then ends its turn. The log says `auto-clear lane N`. A read that
+  names an older receipt, or any tab other than the one the result is for, does nothing.
 - **Even out the lanes.** The ⇄ button moves queued tasks from the fullest lane to the emptiest
   (never the task in flight, never chained tasks) and re-tags the sending tab to its new lane.
 - **Shortcuts.** The keycap icon slides up a sheet listing every hotkey and board gesture.

@@ -134,6 +134,12 @@ function compute(lane: Lane): void {
   else lane.stage = 'empty';
 }
 
+// `receipts.sh consume` stamps the result's STATUS line "COMPLETE  [CONSUMED <time>]": a tab took the
+// result and said so. The first word is still COMPLETE, so the lane keeps reading as a landed result.
+export function isConsumed(f: LaneFile): boolean {
+  return /\[CONSUMED\b/i.test(f.fields.STATUS ?? '');
+}
+
 export function laneIsResult(lane: Lane): boolean {
   return lane.stage === 'complete' || lane.stage === 'partial' || lane.stage === 'blocked' || lane.stage === 'abandoned';
 }

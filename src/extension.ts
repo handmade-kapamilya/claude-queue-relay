@@ -10,7 +10,7 @@ import { readSessionTitle, readTitles } from './titles';
 import * as tabs from './tabs';
 import { SoundKind, claim, cleanupClaims, macNotify, playSound } from './notify';
 import { Age, Board, BoardMessage, LaneRow, ProblemRow, Row, Snapshot } from './board';
-import { Lane, LaneStage, LaneTask, RelayWatcher, fileAgeMs, laneIsResult, laneLook, laneTaskLabel, taskNameIn, wedgedInbox } from './relay';
+import { Lane, LaneStage, LaneTask, RelayWatcher, fileAgeMs, isConsumed, laneIsResult, laneLook, laneTaskLabel, taskNameIn, wedgedInbox } from './relay';
 import { coworkSessionFor, openCowork } from './cowork';
 import { fuzzyPickKey } from './fuzzy';
 import { headline } from './footer';
@@ -55,6 +55,8 @@ const GATED = new Set(['money', 'failed', 'needs-you', 'file']);
 const AGE_LIMITS: Record<string, [number, number]> = { waiting: [20, 60], running: [20, 240], lane: [30, 120] };
 const STALE_DAYS = 7;
 const STUCK_MS = 2 * 3_600_000;
+// A consumed result is filed away after this, so the tab that consumed it can finish with the lane's files first.
+const CONSUMED_GRACE_MS = 30_000;
 const DEFER_GIVE_UP_MS = 10 * 60_000;
 
 const expandHome = (p: string) => p.replace(/^~(?=$|\/)/, HOME);
@@ -91,6 +93,8 @@ interface LaneTouch {
   n: number;
   action: 'assign' | 'release';
   file?: string;
+  // A read that names one receipt (receipts.sh show <id>, outbox/<id>.md) only takes that one.
+  taskId?: string;
 }
 
 type Entry = Row & { since: number; session?: Session; tab?: vscode.Tab };
@@ -287,6 +291,9 @@ class TabQueue implements vscode.Disposable {
   private readonly deferred = new Map<string, Deferred>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly held: Announcement[] = [];
+  // Results a tab has read, filed away when that tab's turn ends: session id → the lane results it took.
+  private readonly collected = new Map<string, Array<{ n: number; taskId: string }>>();
+  private readonly clearing = new Set<string>();
   private muted = false;
   private usage?: Usage;
   private accessible = true;
@@ -323,6 +330,7 @@ class TabQueue implements vscode.Disposable {
       this.relay.onDidChange(() => {
         this.render();
         this.scheduleSync();
+        this.sweepConsumed();
       }),
       vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('claudeQueueRelay') && this.render()),
       vscode.window.tabGroups.onDidChangeTabs((e) => this.tabsChanged(e)),
@@ -379,6 +387,7 @@ class TabQueue implements vscode.Disposable {
     if (event.hook_event_name === 'UserPromptSubmit') this.promptSubmitted(session, event.at);
     const touch = this.laneTouched(event);
     if (touch) void this.laneTouchedBy(session, touch);
+    if (event.hook_event_name === 'Stop') this.settleCollected(session);
     if (transition.from === 'waiting' && transition.to === 'running' && session.tabLabel) void this.unpin(session.tabLabel);
     if (!session.title || event.hook_event_name === 'Stop') void this.learnTitle(session).then(() => this.render());
     if (transition.to !== transition.from && (transition.to === 'ready' || transition.to === 'waiting')) void this.surface(session, event.file);
@@ -392,6 +401,7 @@ class TabQueue implements vscode.Disposable {
   }
 
   private forget(session: Session): void {
+    this.collected.delete(session.id);
     if (session.tabLabel) this.pendingPins.delete(session.tabLabel);
     this.registry.remove(session.id);
     this.render();
@@ -408,36 +418,67 @@ class TabQueue implements vscode.Disposable {
   private laneTouched(e: HookEvent): LaneTouch | undefined {
     if (e.hook_event_name !== 'PostToolUse' || !e.tool_input) return undefined;
     const target = e.tool_input.file_path ?? e.tool_input.command ?? '';
-    const n = settings.relayLanes.findIndex((dir) => target.includes(`${path.basename(dir)}/relay/`)) + 1;
+    const n = this.laneNamed(target, e.cwd);
     if (!n || target.includes('/archive/')) return undefined;
     const writes = ['Write', 'Edit', 'MultiEdit'].includes(e.tool_name ?? '');
     const touchesOutbound = /outbound\.md/.test(target);
     const touchesInbound = /inbound\.md|\/queue\//.test(target);
+    // Only a shell command that writes into inbound counts as a send; one that merely mentions it still reads.
+    const writesInbound = /(?:>>?|\btee\b|\bcp\b|\bmv\b)[^\n]*inbound\.md/.test(target);
+    // Results are read as receipts now: `receipts.sh show <id>`, or the outbox/<id>.md copy it prints.
+    const readsOutbox = e.tool_name === 'Read' || /\b(?:cat|head|tail|sed|less|grep|awk|bat)\b/.test(target);
+    const receipt = /receipts\.sh\s+show\s+([^\s;&|'"]+)/.exec(target)?.[1] ?? (readsOutbox ? /outbox\/([^\s/'"]+)\.md/.exec(target)?.[1] : undefined);
+    if (receipt && !writes && !writesInbound) return { n, action: 'release', taskId: receipt };
     if (e.tool_name === 'Read' && touchesOutbound) return { n, action: 'release' };
     if (writes && touchesOutbound && !touchesInbound) return { n, action: 'release' };
     if (writes && touchesInbound) return { n, action: 'assign', file: e.tool_input.file_path };
     if (e.tool_name === 'Bash' && SEND_SCRIPT.test(target)) return { n, action: 'assign' };
     // A shell command that reads the outbound (cat/grep/head…) collects the result, even when it also
-    // mentions inbound.md; only a command that writes into inbound counts as a send.
-    const writesInbound = /(?:>>?|\btee\b|\bcp\b|\bmv\b)[^\n]*inbound\.md/.test(target);
+    // mentions inbound.md.
     if (e.tool_name === 'Bash' && touchesOutbound && !writesInbound) return { n, action: 'release' };
     return undefined;
+  }
+
+  // Which lane a Read path or shell command is about. Tabs write the full path, but they also run
+  // `cd ~/Documents/hk-relay-2 && cat relay/outbound.md`, or sit in the lane folder and say `relay/…`.
+  private laneNamed(target: string, cwd: string): number {
+    const dirs = settings.relayLanes;
+    const full = dirs.findIndex((dir) => target.includes(`${path.basename(dir)}/relay/`));
+    if (full >= 0) return full + 1;
+    const named = dirs.flatMap((dir, i) => (new RegExp(`(?:^|[\\s/"'=])${path.basename(dir).replace(/\W/g, '\\$&')}(?=$|[\\s/"';&|)])`).test(target) ? [i + 1] : []));
+    if (named.length) return named.length === 1 ? named[0] : 0;
+    if (!/(?:^|[\s"'=])(?:\.\/)?relay\//.test(target)) return 0;
+    return dirs.findIndex((dir) => cwd === dir || cwd.startsWith(dir + path.sep)) + 1;
+  }
+
+  // Is this tab the one the lane's result is for? The same ties Receive uses: the SESSION stamped in
+  // the file, the sender record, the one tab waiting on the lane, then RETURN-TO. A tab's own `lanes`
+  // only says what its last footer mentioned, which is often nothing by the time the result is read.
+  private ownsResult(session: Session, lane: Lane): boolean {
+    const result = lane.result;
+    const stamped = [result?.sessionId, this.laneTaskById(lane.n, result?.taskId)?.sessionId, result?.taskId ? readSenders()[result.taskId]?.sessionId : undefined];
+    if (stamped.includes(session.id)) return true;
+    const tab = this.tabFor(result, lane.n);
+    return !!tab && tab === this.tabOf(session);
   }
 
   private async laneTouchedBy(session: Session, touch: LaneTouch): Promise<void> {
     const { n, action } = touch;
     if (action === 'release') {
-      if (!session.lanes.includes(n)) return;
-      session.lanes = session.lanes.filter((lane) => lane !== n);
-      this.log.info(`${short(session.id)} collected lane ${n}`);
-      // Reading a landed result IS ingesting it — "seen" used to be as far as this went, which left
-      // a collected job sitting in the lane forever (until Alex noticed and clicked Clear by hand).
-      // Clear it for real now, so collecting and freeing the lane are the same step; a read that
-      // lands when there's no actual result to take (lane mid-flight, already empty) still just
-      // marks seen, so this never cancels something still running.
       const lane = this.lane(n);
-      if (lane && laneIsResult(lane)) await this.clearLane(n);
-      else this.relay.markSeen(n);
+      const result = lane?.result;
+      if (!session.lanes.includes(n) && !(lane && this.ownsResult(session, lane))) return;
+      // A read that names a receipt only takes that receipt; an older one in the outbox isn't the lane's result.
+      if (touch.taskId && result && touch.taskId !== result.taskId) return;
+      session.lanes = session.lanes.filter((l) => l !== n);
+      this.log.info(`${short(session.id)} collected lane ${n}`);
+      // Reading a landed result IS ingesting it, so it gets filed away, not just marked seen. That
+      // happens when the tab's turn ends (it may still be consuming the receipt or filing the next
+      // task, and clearing under it would archive the inbox copy it is about to use). A read with no
+      // actual result to take (lane mid-flight, already empty) only marks seen, so this never
+      // cancels something still running.
+      this.relay.markSeen(n);
+      if (lane && result?.taskId && laneIsResult(lane)) this.holdUntilStop(session, n, result.taskId);
       if (session.tabLabel) void this.unpin(session.tabLabel);
       this.scheduleSync();
       return;
@@ -451,6 +492,48 @@ class TabQueue implements vscode.Disposable {
     if (file && title) this.recordSender(file, title, session, n);
     this.scheduleSync(900);
     this.render();
+  }
+
+  private holdUntilStop(session: Session, n: number, taskId: string): void {
+    const taken = this.collected.get(session.id) ?? [];
+    if (!taken.some((t) => t.n === n && t.taskId === taskId)) taken.push({ n, taskId });
+    this.collected.set(session.id, taken);
+  }
+
+  private settleCollected(session: Session): void {
+    const taken = this.collected.get(session.id);
+    if (!taken) return;
+    this.collected.delete(session.id);
+    for (const { n, taskId } of taken) this.autoClear(n, taskId, `${short(session.id)} took it`, 0);
+  }
+
+  // `receipts.sh consume` stamps the live result "[CONSUMED …]". Whichever tab ran it, the result has been
+  // taken, so the job is filed away without waiting for a click.
+  private sweepConsumed(): void {
+    for (const lane of this.relay.lanes) {
+      const taskId = lane.outbound.fields.TASK_ID;
+      if (taskId && taskId !== 'none' && isConsumed(lane.outbound)) this.autoClear(lane.n, taskId, 'its result was consumed', CONSUMED_GRACE_MS);
+    }
+  }
+
+  // File a taken result's whole job away (what Clear it does), once it still holds the lane. Checked again
+  // when the wait is over: Alex may have cleared it by hand, or a newer result may have replaced it.
+  private autoClear(n: number, taskId: string, why: string, waitMs: number): void {
+    const key = `${n}|${taskId}`;
+    if (this.clearing.has(key)) return;
+    this.clearing.add(key);
+    setTimeout(() => {
+      this.clearing.delete(key);
+      const lane = this.lane(n);
+      if (!lane || lane.result?.taskId !== taskId || lane.stage === 'needs_you_live') return;
+      const label = laneTaskLabel(lane.result);
+      this.log.info(`auto-clear lane ${n} «${label}»: ${why}`);
+      try {
+        this.clearJob(lane, taskId, label);
+      } catch (err) {
+        this.log.warn(`auto-clear lane ${n} «${label}» failed: ${err}`);
+      }
+    }, waitMs);
   }
 
   private recordSender(file: string, title: string, session: Session, n: number): void {
@@ -1595,7 +1678,11 @@ class TabQueue implements vscode.Disposable {
     const job = lane.result ?? lane.current;
     const taskId = job?.taskId ?? wedgedInbox(lane)?.taskId ?? lane.inbound.fields.TASK_ID;
     if (!taskId || taskId === 'none') return void vscode.window.setStatusBarMessage(`Lane ${n} has nothing to clear`, 2500);
-    const label = job ? laneTaskLabel(job) : (wedgedInbox(lane)?.name ?? taskId);
+    this.clearJob(lane, taskId, job ? laneTaskLabel(job) : (wedgedInbox(lane)?.name ?? taskId));
+  }
+
+  private clearJob(lane: Lane, taskId: string, label: string): void {
+    const n = lane.n;
     this.forgetSender(taskId, n);
     const archived = this.relay.clearJob(lane, taskId);
     this.log.info(`cleared lane ${n} job "${label}" (${taskId}); archived ${archived.length} file(s)`);
